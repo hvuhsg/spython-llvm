@@ -1,0 +1,14 @@
+class Point:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+class Named:
+    def __init__(self, name: str, count: int):
+        self.name = name
+        self.count = count
+
+p: Point = Point(3, 4)
+print(p)
+n: Named = Named("alice", 42)
+print(n)

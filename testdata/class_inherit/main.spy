@@ -1,0 +1,29 @@
+class Animal:
+    def __init__(self, name: str):
+        self.name = name
+
+    def speak(self) -> str:
+        return "generic noise"
+
+class Dog(Animal):
+    def __init__(self, name: str):
+        super().__init__(name)
+
+    def speak(self) -> str:
+        return "woof"
+
+class Cat(Animal):
+    def __init__(self, name: str):
+        super().__init__(name)
+
+    def speak(self) -> str:
+        return "meow"
+
+def describe(a: Animal) -> None:
+    print(a.name)
+    print(a.speak())
+
+d: Dog = Dog("rex")
+c: Cat = Cat("whiskers")
+describe(d)
+describe(c)

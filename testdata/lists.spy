@@ -1,0 +1,10 @@
+nums: list[int] = [10, 20, 30]
+print(nums[0])
+print(nums[2])
+print(len(nums))
+nums.append(40)
+print(len(nums))
+print(nums[3])
+
+for x in nums:
+    print(x)

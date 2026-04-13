@@ -1,0 +1,4 @@
+import b
+
+def double_inc(x: int) -> int:
+    return b.inc(b.inc(x))

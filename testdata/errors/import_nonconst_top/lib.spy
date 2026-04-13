@@ -1,0 +1,4 @@
+def f(x: int) -> int:
+    return x + 1
+
+print("side-effect at module load")

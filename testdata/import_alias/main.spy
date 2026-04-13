@@ -1,0 +1,5 @@
+import util as u
+from util import shout as yell
+
+print(u.greet("world"))
+print(yell("ok"))

@@ -1,0 +1,7 @@
+ages: map[str, int] = {"alice": 30, "bob": 25}
+print(ages["alice"])
+print(ages["bob"])
+print(len(ages))
+ages["carol"] = 28
+print(ages["carol"])
+print(len(ages))

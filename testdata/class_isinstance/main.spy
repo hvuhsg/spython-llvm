@@ -1,0 +1,26 @@
+class Shape:
+    def __init__(self):
+        self.kind = "shape"
+
+class Circle(Shape):
+    def __init__(self):
+        super().__init__()
+        self.sides = 0
+
+class Square(Shape):
+    def __init__(self):
+        super().__init__()
+        self.sides = 4
+
+def check(s: Shape) -> None:
+    if isinstance(s, Circle):
+        print("circle")
+    if isinstance(s, Square):
+        print("square")
+    if isinstance(s, Shape):
+        print("shape")
+
+c: Circle = Circle()
+s: Square = Square()
+check(c)
+check(s)

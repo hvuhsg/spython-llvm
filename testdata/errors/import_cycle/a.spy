@@ -1,0 +1,4 @@
+import b
+
+def f() -> int:
+    return 1

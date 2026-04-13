@@ -1,0 +1,5 @@
+def greet(name: str) -> str:
+    return "hello, " + name
+
+def shout(name: str) -> str:
+    return name + "!"

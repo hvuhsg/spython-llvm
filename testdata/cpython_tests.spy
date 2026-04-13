@@ -1,0 +1,775 @@
+# Tests derived from CPython test suite
+# Each test prints "PASS" or "FAIL <description>"
+
+passed: int = 0
+failed: int = 0
+
+# ============ test_augassign.py: testBasic ============
+x: int = 2
+x += 1
+x *= 2
+x **= 2
+x -= 8
+x //= 5
+x %= 3
+if x == 2:
+    passed += 1
+    print("PASS augassign_basic_int")
+else:
+    failed += 1
+    print("FAIL augassign_basic_int")
+
+# augmented assignment with bitwise
+y: int = 2
+y &= 3
+if y == 2:
+    passed += 1
+    print("PASS augassign_and")
+else:
+    failed += 1
+    print("FAIL augassign_and")
+
+y |= 5
+if y == 7:
+    passed += 1
+    print("PASS augassign_or")
+else:
+    failed += 1
+    print("FAIL augassign_or")
+
+y ^= 1
+if y == 6:
+    passed += 1
+    print("PASS augassign_xor")
+else:
+    failed += 1
+    print("FAIL augassign_xor")
+
+# ============ test_bool.py: test_str ============
+if str(False) == "False":
+    passed += 1
+    print("PASS bool_str_false")
+else:
+    failed += 1
+    print("FAIL bool_str_false")
+
+if str(True) == "True":
+    passed += 1
+    print("PASS bool_str_true")
+else:
+    failed += 1
+    print("FAIL bool_str_true")
+
+# ============ test_bool.py: test_int ============
+if int(False) == 0:
+    passed += 1
+    print("PASS bool_int_false")
+else:
+    failed += 1
+    print("FAIL bool_int_false")
+
+if int(True) == 1:
+    passed += 1
+    print("PASS bool_int_true")
+else:
+    failed += 1
+    print("FAIL bool_int_true")
+
+# ============ test_bool.py: comparisons return bool ============
+if (1 == 1) == True:
+    passed += 1
+    print("PASS cmp_eq_true")
+else:
+    failed += 1
+    print("FAIL cmp_eq_true")
+
+if (1 == 0) == False:
+    passed += 1
+    print("PASS cmp_eq_false")
+else:
+    failed += 1
+    print("FAIL cmp_eq_false")
+
+if (0 < 1) == True:
+    passed += 1
+    print("PASS cmp_lt_true")
+else:
+    failed += 1
+    print("FAIL cmp_lt_true")
+
+if (1 < 0) == False:
+    passed += 1
+    print("PASS cmp_lt_false")
+else:
+    failed += 1
+    print("FAIL cmp_lt_false")
+
+if (0 <= 0) == True:
+    passed += 1
+    print("PASS cmp_le_true")
+else:
+    failed += 1
+    print("FAIL cmp_le_true")
+
+if (1 > 0) == True:
+    passed += 1
+    print("PASS cmp_gt_true")
+else:
+    failed += 1
+    print("FAIL cmp_gt_true")
+
+if (1 >= 1) == True:
+    passed += 1
+    print("PASS cmp_ge_true")
+else:
+    failed += 1
+    print("FAIL cmp_ge_true")
+
+if (0 != 1) == True:
+    passed += 1
+    print("PASS cmp_ne_true")
+else:
+    failed += 1
+    print("FAIL cmp_ne_true")
+
+if (0 != 0) == False:
+    passed += 1
+    print("PASS cmp_ne_false")
+else:
+    failed += 1
+    print("FAIL cmp_ne_false")
+
+# ============ test_bool.py: not ============
+if not True == False:
+    passed += 1
+    print("PASS not_true")
+else:
+    failed += 1
+    print("FAIL not_true")
+
+if not False == True:
+    passed += 1
+    print("PASS not_false")
+else:
+    failed += 1
+    print("FAIL not_false")
+
+# ============ test_compare.py: test_numbers ============
+if 1001 == 1001:
+    passed += 1
+    print("PASS int_eq")
+else:
+    failed += 1
+    print("FAIL int_eq")
+
+if 1001 < 1002:
+    passed += 1
+    print("PASS int_lt")
+else:
+    failed += 1
+    print("FAIL int_lt")
+
+if 1001 <= 1001:
+    passed += 1
+    print("PASS int_le")
+else:
+    failed += 1
+    print("FAIL int_le")
+
+if 1002 > 1001:
+    passed += 1
+    print("PASS int_gt")
+else:
+    failed += 1
+    print("FAIL int_gt")
+
+if 1001 >= 1001:
+    passed += 1
+    print("PASS int_ge")
+else:
+    failed += 1
+    print("FAIL int_ge")
+
+if 1001 != 1002:
+    passed += 1
+    print("PASS int_ne")
+else:
+    failed += 1
+    print("FAIL int_ne")
+
+if 1001.0 == 1001.0:
+    passed += 1
+    print("PASS float_eq")
+else:
+    failed += 1
+    print("FAIL float_eq")
+
+if 1001.0 < 1001.1:
+    passed += 1
+    print("PASS float_lt")
+else:
+    failed += 1
+    print("FAIL float_lt")
+
+# ============ test_int.py: test_basic (int from float) ============
+if int(3.14) == 3:
+    passed += 1
+    print("PASS int_from_float_pos")
+else:
+    failed += 1
+    print("FAIL int_from_float_pos")
+
+if int(-3.14) == -3:
+    passed += 1
+    print("PASS int_from_float_neg")
+else:
+    failed += 1
+    print("FAIL int_from_float_neg")
+
+if int(3.9) == 3:
+    passed += 1
+    print("PASS int_from_float_trunc_pos")
+else:
+    failed += 1
+    print("FAIL int_from_float_trunc_pos")
+
+if int(-3.9) == -3:
+    passed += 1
+    print("PASS int_from_float_trunc_neg")
+else:
+    failed += 1
+    print("FAIL int_from_float_trunc_neg")
+
+# ============ test_float.py: test_float_pow ============
+if 2.0 ** 0.0 == 1.0:
+    passed += 1
+    print("PASS float_pow_zero")
+else:
+    failed += 1
+    print("FAIL float_pow_zero")
+
+if 2.0 ** 1.0 == 2.0:
+    passed += 1
+    print("PASS float_pow_one")
+else:
+    failed += 1
+    print("FAIL float_pow_one")
+
+if 2.0 ** 2.0 == 4.0:
+    passed += 1
+    print("PASS float_pow_two")
+else:
+    failed += 1
+    print("FAIL float_pow_two")
+
+if 2.0 ** -1.0 == 0.5:
+    passed += 1
+    print("PASS float_pow_neg_one")
+else:
+    failed += 1
+    print("FAIL float_pow_neg_one")
+
+if 2.0 ** -2.0 == 0.25:
+    passed += 1
+    print("PASS float_pow_neg_two")
+else:
+    failed += 1
+    print("FAIL float_pow_neg_two")
+
+# ============ test_str.py: test_comparison ============
+if "abc" == "abc":
+    passed += 1
+    print("PASS str_eq")
+else:
+    failed += 1
+    print("FAIL str_eq")
+
+if "abcd" > "abc":
+    passed += 1
+    print("PASS str_gt")
+else:
+    failed += 1
+    print("FAIL str_gt")
+
+if "abc" < "abcd":
+    passed += 1
+    print("PASS str_lt")
+else:
+    failed += 1
+    print("FAIL str_lt")
+
+if "abc" != "def":
+    passed += 1
+    print("PASS str_ne")
+else:
+    failed += 1
+    print("FAIL str_ne")
+
+if "abc" <= "abc":
+    passed += 1
+    print("PASS str_le")
+else:
+    failed += 1
+    print("FAIL str_le")
+
+if "abc" >= "abc":
+    passed += 1
+    print("PASS str_ge")
+else:
+    failed += 1
+    print("FAIL str_ge")
+
+# ============ String operations ============
+if "hello" + " " + "world" == "hello world":
+    passed += 1
+    print("PASS str_concat")
+else:
+    failed += 1
+    print("FAIL str_concat")
+
+if len("") == 0:
+    passed += 1
+    print("PASS str_len_empty")
+else:
+    failed += 1
+    print("FAIL str_len_empty")
+
+if len("hello") == 5:
+    passed += 1
+    print("PASS str_len")
+else:
+    failed += 1
+    print("FAIL str_len")
+
+# ============ list_tests.py: test_append ============
+a: list[int] = [1, 2, 3]
+a.append(4)
+a.append(5)
+if len(a) == 5:
+    passed += 1
+    print("PASS list_append_len")
+else:
+    failed += 1
+    print("FAIL list_append_len")
+
+if a[0] == 1:
+    passed += 1
+    print("PASS list_get_0")
+else:
+    failed += 1
+    print("FAIL list_get_0")
+
+if a[4] == 5:
+    passed += 1
+    print("PASS list_get_last")
+else:
+    failed += 1
+    print("FAIL list_get_last")
+
+# ============ list_tests.py: test_setitem ============
+b: list[int] = [0, 1]
+b[0] = 100
+b[1] = 200
+if b[0] == 100:
+    passed += 1
+    print("PASS list_set_0")
+else:
+    failed += 1
+    print("FAIL list_set_0")
+
+if b[1] == 200:
+    passed += 1
+    print("PASS list_set_1")
+else:
+    failed += 1
+    print("FAIL list_set_1")
+
+# ============ list_tests.py: test_len ============
+if len([1, 2, 3]) == 3:
+    passed += 1
+    print("PASS list_len")
+else:
+    failed += 1
+    print("FAIL list_len")
+
+# ============ test_binop.py: GCD algorithm ============
+def gcd(aa: int, bb: int) -> int:
+    while aa != 0:
+        tmp: int = bb % aa
+        bb = aa
+        aa = tmp
+    return bb
+
+if gcd(10, 12) == 2:
+    passed += 1
+    print("PASS gcd_10_12")
+else:
+    failed += 1
+    print("FAIL gcd_10_12")
+
+if gcd(10, 15) == 5:
+    passed += 1
+    print("PASS gcd_10_15")
+else:
+    failed += 1
+    print("FAIL gcd_10_15")
+
+if gcd(10, 11) == 1:
+    passed += 1
+    print("PASS gcd_10_11")
+else:
+    failed += 1
+    print("FAIL gcd_10_11")
+
+if gcd(100, 15) == 5:
+    passed += 1
+    print("PASS gcd_100_15")
+else:
+    failed += 1
+    print("FAIL gcd_100_15")
+
+# ============ test_binop.py: true division ============
+if 1.0 / 2.0 == 0.5:
+    passed += 1
+    print("PASS true_div")
+else:
+    failed += 1
+    print("FAIL true_div")
+
+# ============ Integer power ============
+if 2 ** 10 == 1024:
+    passed += 1
+    print("PASS int_pow")
+else:
+    failed += 1
+    print("FAIL int_pow")
+
+if 3 ** 0 == 1:
+    passed += 1
+    print("PASS int_pow_zero")
+else:
+    failed += 1
+    print("FAIL int_pow_zero")
+
+# ============ Bitwise operators ============
+if 0 & 0 == 0:
+    passed += 1
+    print("PASS bitwise_and_00")
+else:
+    failed += 1
+    print("FAIL bitwise_and_00")
+
+if 0 | 0 == 0:
+    passed += 1
+    print("PASS bitwise_or_00")
+else:
+    failed += 1
+    print("FAIL bitwise_or_00")
+
+if 15 & 9 == 9:
+    passed += 1
+    print("PASS bitwise_and_15_9")
+else:
+    failed += 1
+    print("FAIL bitwise_and_15_9")
+
+if 15 | 9 == 15:
+    passed += 1
+    print("PASS bitwise_or_15_9")
+else:
+    failed += 1
+    print("FAIL bitwise_or_15_9")
+
+if 15 ^ 9 == 6:
+    passed += 1
+    print("PASS bitwise_xor_15_9")
+else:
+    failed += 1
+    print("FAIL bitwise_xor_15_9")
+
+if ~0 == -1:
+    passed += 1
+    print("PASS bitwise_not_0")
+else:
+    failed += 1
+    print("FAIL bitwise_not_0")
+
+if ~-1 == 0:
+    passed += 1
+    print("PASS bitwise_not_neg1")
+else:
+    failed += 1
+    print("FAIL bitwise_not_neg1")
+
+if 1 << 10 == 1024:
+    passed += 1
+    print("PASS lshift")
+else:
+    failed += 1
+    print("FAIL lshift")
+
+if 1024 >> 10 == 1:
+    passed += 1
+    print("PASS rshift")
+else:
+    failed += 1
+    print("FAIL rshift")
+
+# ============ Floor division ============
+if 7 // 2 == 3:
+    passed += 1
+    print("PASS floordiv_pos")
+else:
+    failed += 1
+    print("FAIL floordiv_pos")
+
+if -7 // 2 == -3:
+    passed += 1
+    print("PASS floordiv_neg")
+else:
+    failed += 1
+    print("FAIL floordiv_neg")
+
+# ============ Modulo ============
+if 7 % 3 == 1:
+    passed += 1
+    print("PASS mod_pos")
+else:
+    failed += 1
+    print("FAIL mod_pos")
+
+# ============ Map operations ============
+m: map[str, int] = {"a": 1, "b": 2, "c": 3}
+if m["a"] == 1:
+    passed += 1
+    print("PASS map_get_a")
+else:
+    failed += 1
+    print("FAIL map_get_a")
+
+if m["c"] == 3:
+    passed += 1
+    print("PASS map_get_c")
+else:
+    failed += 1
+    print("FAIL map_get_c")
+
+if len(m) == 3:
+    passed += 1
+    print("PASS map_len")
+else:
+    failed += 1
+    print("FAIL map_len")
+
+m["d"] = 4
+if m["d"] == 4:
+    passed += 1
+    print("PASS map_set")
+else:
+    failed += 1
+    print("FAIL map_set")
+
+if len(m) == 4:
+    passed += 1
+    print("PASS map_len_after_set")
+else:
+    failed += 1
+    print("FAIL map_len_after_set")
+
+# ============ For/range tests ============
+total: int = 0
+for i in range(10):
+    total += i
+if total == 45:
+    passed += 1
+    print("PASS range_sum")
+else:
+    failed += 1
+    print("FAIL range_sum")
+
+total2: int = 0
+for j in range(5, 10):
+    total2 += j
+if total2 == 35:
+    passed += 1
+    print("PASS range_start_stop")
+else:
+    failed += 1
+    print("FAIL range_start_stop")
+
+total3: int = 0
+for k in range(0, 20, 3):
+    total3 += k
+if total3 == 63:
+    passed += 1
+    print("PASS range_step")
+else:
+    failed += 1
+    print("FAIL range_step")
+
+# ============ While loop with break ============
+counter: int = 0
+w: int = 0
+while True:
+    if w == 5:
+        break
+    counter += 1
+    w += 1
+if counter == 5:
+    passed += 1
+    print("PASS while_break")
+else:
+    failed += 1
+    print("FAIL while_break")
+
+# ============ For with continue ============
+evens: int = 0
+for ci in range(10):
+    if ci % 2 != 0:
+        continue
+    evens += 1
+if evens == 5:
+    passed += 1
+    print("PASS for_continue")
+else:
+    failed += 1
+    print("FAIL for_continue")
+
+# ============ Recursive fibonacci ============
+def fib(n: int) -> int:
+    if n <= 1:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+if fib(0) == 0:
+    passed += 1
+    print("PASS fib_0")
+else:
+    failed += 1
+    print("FAIL fib_0")
+
+if fib(1) == 1:
+    passed += 1
+    print("PASS fib_1")
+else:
+    failed += 1
+    print("FAIL fib_1")
+
+if fib(10) == 55:
+    passed += 1
+    print("PASS fib_10")
+else:
+    failed += 1
+    print("FAIL fib_10")
+
+# ============ String indexing ============
+s: str = "hello"
+if s[0] == "h":
+    passed += 1
+    print("PASS str_index_0")
+else:
+    failed += 1
+    print("FAIL str_index_0")
+
+if s[4] == "o":
+    passed += 1
+    print("PASS str_index_4")
+else:
+    failed += 1
+    print("FAIL str_index_4")
+
+# ============ Nested if ============
+val: int = 42
+if val > 0:
+    if val > 100:
+        print("FAIL nested_if")
+        failed += 1
+    else:
+        if val == 42:
+            passed += 1
+            print("PASS nested_if")
+        else:
+            failed += 1
+            print("FAIL nested_if")
+
+# ============ Nested loops ============
+count: int = 0
+for ni in range(5):
+    for nj in range(5):
+        count += 1
+if count == 25:
+    passed += 1
+    print("PASS nested_loops")
+else:
+    failed += 1
+    print("FAIL nested_loops")
+
+# ============ Short-circuit and ============
+sc_and: int = 0
+if False and True:
+    sc_and = 1
+if sc_and == 0:
+    passed += 1
+    print("PASS short_circuit_and")
+else:
+    failed += 1
+    print("FAIL short_circuit_and")
+
+# ============ Short-circuit or ============
+sc_or: int = 0
+if True or False:
+    sc_or = 1
+if sc_or == 1:
+    passed += 1
+    print("PASS short_circuit_or")
+else:
+    failed += 1
+    print("FAIL short_circuit_or")
+
+# ============ Multiple function calls ============
+def double(n: int) -> int:
+    return n * 2
+
+def add_one(n: int) -> int:
+    return n + 1
+
+if double(add_one(5)) == 12:
+    passed += 1
+    print("PASS nested_func_calls")
+else:
+    failed += 1
+    print("FAIL nested_func_calls")
+
+# ============ String escape sequences ============
+if len("\n") == 1:
+    passed += 1
+    print("PASS escape_newline")
+else:
+    failed += 1
+    print("FAIL escape_newline")
+
+if len("\t") == 1:
+    passed += 1
+    print("PASS escape_tab")
+else:
+    failed += 1
+    print("FAIL escape_tab")
+
+# ============ Type conversions ============
+if str(42) == "42":
+    passed += 1
+    print("PASS str_from_int")
+else:
+    failed += 1
+    print("FAIL str_from_int")
+
+if float(5) == 5.0:
+    passed += 1
+    print("PASS float_from_int")
+else:
+    failed += 1
+    print("FAIL float_from_int")
+
+# ============ Summary ============
+print("---")
+print(passed, failed)

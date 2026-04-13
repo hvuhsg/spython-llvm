@@ -1,0 +1,20 @@
+class Shape:
+    def __init__(self, name: str):
+        self.name = name
+
+    def describe(self) -> str:
+        return self.name
+
+class Circle(Shape):
+    def __init__(self, radius: float):
+        super().__init__("circle")
+        self.radius = radius
+
+    def area(self) -> float:
+        return 3.14 * self.radius * self.radius
+
+c: Circle = Circle(2.0)
+print(c.name)
+print(c.radius)
+print(c.area())
+print(c.describe())

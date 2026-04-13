@@ -1,0 +1,5 @@
+from mathx import square, PI
+
+r: int = square(PI)
+print(r)
+print(square(4))

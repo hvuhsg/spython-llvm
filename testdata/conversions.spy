@@ -1,0 +1,8 @@
+x: float = float(42)
+print(x)
+y: int = int(3.14)
+print(y)
+s: str = str(123)
+print(s)
+s2: str = str(True)
+print(s2)

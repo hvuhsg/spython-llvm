@@ -1,0 +1,4 @@
+import a
+
+def g() -> int:
+    return 2

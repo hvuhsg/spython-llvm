@@ -1,0 +1,25 @@
+class Vec2:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def __add__(self, other: Vec2) -> Vec2:
+        return Vec2(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other: Vec2) -> Vec2:
+        return Vec2(self.x - other.x, self.y - other.y)
+
+    def __neg__(self) -> Vec2:
+        return Vec2(-self.x, -self.y)
+
+a: Vec2 = Vec2(1, 2)
+b: Vec2 = Vec2(3, 5)
+c: Vec2 = a + b
+print(c.x)
+print(c.y)
+d: Vec2 = a - b
+print(d.x)
+print(d.y)
+e: Vec2 = -a
+print(e.x)
+print(e.y)

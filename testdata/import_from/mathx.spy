@@ -1,0 +1,5 @@
+PI: int = 3
+TAU: int = 6
+
+def square(x: int) -> int:
+    return x * x

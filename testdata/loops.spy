@@ -1,0 +1,13 @@
+x: int = 5
+while x > 0:
+    print(x)
+    x = x - 1
+
+for i in range(5):
+    print(i)
+
+for j in range(2, 6):
+    print(j)
+
+for k in range(0, 10, 3):
+    print(k)
