@@ -273,11 +273,20 @@
     <span class="kw">def</span> area(self) -&gt; float:
         <span class="kw">return</span> 3.14 * self.r * self.r
 
-shapes: list[Shape] = [Circle(2.0), Circle(1.0)]
+<span class="kw">class</span> Rect(Shape):
+    <span class="kw">def</span> __init__(self, w: float, h: float):
+        super().__init__()
+        self.name = <span class="str">"rect"</span>
+        self.w = w
+        self.h = h
+    <span class="kw">def</span> area(self) -&gt; float:
+        <span class="kw">return</span> self.w * self.h
+
+shapes: list[Shape] = [Circle(2.0), Rect(3.0, 4.0), Circle(1.0)]
 total: float = 0.0
 <span class="kw">for</span> s <span class="kw">in</span> shapes:
     total = total + s.area()
-<span class="kw">print</span>(total)  <span class="com"># 15.7</span></code></pre>
+<span class="kw">print</span>(total)  <span class="com"># 27.7</span></code></pre>
 </section>
 
 <section>
