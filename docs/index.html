@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>spython — a Python-subset compiler to LLVM IR</title>
+<meta name="description" content="spython compiles a statically-typed subset of Python to LLVM IR. Written in Go. Supports classes, inheritance, vtables, super(), isinstance(), and dunder methods. Uses bdwgc for garbage collection.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #fafaf8;
+    --fg: #1a1a1a;
+    --muted: #666;
+    --border: #e4e4e0;
+    --card: #ffffff;
+    --accent: #0f766e;
+    --accent-fade: #0f766e14;
+    --yes: #0f766e;
+    --no: #b4451f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #8b949e;
+      --border: #21262d;
+      --card: #161b22;
+      --accent: #4dd0c5;
+      --accent-fade: #4dd0c520;
+      --yes: #4dd0c5;
+      --no: #ff8b5c;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--fg);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  .mono, code, pre {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  main {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 80px 32px 120px;
+  }
+  header {
+    padding-bottom: 56px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 56px;
+  }
+  .name {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 56px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--fg);
+  }
+  .name::before {
+    content: ">";
+    color: var(--accent);
+    margin-right: 14px;
+  }
+  .tagline {
+    margin-top: 14px;
+    font-size: 19px;
+    color: var(--muted);
+    max-width: 640px;
+  }
+  .badges {
+    margin-top: 28px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .badge {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted);
+    background: var(--card);
+  }
+  section {
+    margin-top: 64px;
+  }
+  h2 {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 20px;
+  }
+  h3 {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--fg);
+    margin-bottom: 10px;
+  }
+  p { margin-bottom: 16px; }
+  p.lead { font-size: 17px; color: var(--fg); }
+  .pipeline {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 14px;
+    padding: 20px 24px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow-x: auto;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+  .pipeline .arrow { color: var(--border); margin: 0 8px; }
+  .pipeline .stage { color: var(--fg); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px;
+  }
+  .card {
+    padding: 20px 22px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--card);
+  }
+  .card ul {
+    list-style: none;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .card li { padding: 2px 0; }
+  .card li::before { content: ""; display: inline-block; width: 0; }
+  .check-list {
+    list-style: none;
+    padding-left: 0;
+  }
+  .check-list li {
+    padding: 6px 0;
+    padding-left: 24px;
+    position: relative;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .check-list li::before {
+    position: absolute;
+    left: 0;
+    top: 6px;
+    font-weight: 700;
+  }
+  .check-list.no li::before { content: "×"; color: var(--no); font-size: 18px; line-height: 1; }
+  pre {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px 24px;
+    overflow-x: auto;
+    font-size: 13.5px;
+    line-height: 1.65;
+    color: var(--fg);
+  }
+  pre.py .kw { color: var(--accent); }
+  pre.py .str { color: var(--no); }
+  pre.py .com { color: var(--muted); font-style: italic; }
+  code {
+    background: var(--accent-fade);
+    color: var(--accent);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.92em;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; font-size: inherit; }
+  .step {
+    margin-bottom: 14px;
+  }
+  .step-label {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  footer {
+    margin-top: 96px;
+    padding-top: 32px;
+    border-top: 1px solid var(--border);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.15s;
+  }
+  a:hover { border-bottom-color: var(--accent); }
+  @media (max-width: 600px) {
+    main { padding: 48px 20px 80px; }
+    .name { font-size: 40px; }
+    .tagline { font-size: 16px; }
+    section { margin-top: 48px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1 class="name">spython</h1>
+  <p class="tagline">A statically-typed subset of Python compiled to LLVM IR. Written in Go.</p>
+  <div class="badges">
+    <span class="badge">Go</span>
+    <span class="badge">LLVM</span>
+    <span class="badge">bdwgc</span>
+    <span class="badge">single-pass IR</span>
+  </div>
+</header>
+
+<section>
+  <h2>Overview</h2>
+  <p class="lead">
+    spython takes a strict, typed subset of Python, runs it through a clean multi-pass frontend, emits LLVM IR,
+    and hands off to <code>clang</code> to produce a native binary. Heap memory is managed by the
+    Boehm–Demers–Weiser conservative garbage collector.
+  </p>
+  <p>
+    The goal is a practical, readable compiler that&rsquo;s small enough to reason about end-to-end &mdash;
+    not a full CPython replacement. It&rsquo;s opinionated: type annotations are required on first binding,
+    dynamic features are intentionally absent, and the runtime is a single C file.
+  </p>
+</section>
+
+<section>
+  <h2>Pipeline</h2>
+  <div class="pipeline">
+    <span class="stage">lexer</span><span class="arrow">→</span><span class="stage">parser</span><span class="arrow">→</span><span class="stage">loader</span><span class="arrow">→</span><span class="stage">type&nbsp;checker</span><span class="arrow">→</span><span class="stage">codegen</span><span class="arrow">→</span><span class="stage">clang</span>
+  </div>
+  <p style="margin-top: 16px; color: var(--muted); font-size: 14.5px;">
+    Each stage is isolated in its own Go package. No shared mutable state, no visitor patterns &mdash; just plain
+    data flowing forward.
+  </p>
+</section>
+
+<section>
+  <h2>Example</h2>
+<pre class="py"><code><span class="kw">class</span> Shape:
+    <span class="kw">def</span> __init__(self):
+        self.name = <span class="str">"shape"</span>
+    <span class="kw">def</span> area(self) -&gt; float:
+        <span class="kw">return</span> 0.0
+
+<span class="kw">class</span> Circle(Shape):
+    <span class="kw">def</span> __init__(self, r: float):
+        super().__init__()
+        self.name = <span class="str">"circle"</span>
+        self.r = r
+    <span class="kw">def</span> area(self) -&gt; float:
+        <span class="kw">return</span> 3.14 * self.r * self.r
+
+shapes: list[Shape] = [Circle(2.0), Circle(1.0)]
+total: float = 0.0
+<span class="kw">for</span> s <span class="kw">in</span> shapes:
+    total = total + s.area()
+<span class="kw">print</span>(total)  <span class="com"># 15.7</span></code></pre>
+</section>
+
+<section>
+  <h2>What&rsquo;s supported</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Types</h3>
+      <ul>
+        <li>int, float, bool</li>
+        <li>str</li>
+        <li>list[T]</li>
+        <li>dict[K, V]</li>
+        <li>None</li>
+        <li>user-defined classes</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Control flow</h3>
+      <ul>
+        <li>if / elif / else</li>
+        <li>while</li>
+        <li>for … in range</li>
+        <li>for … in list</li>
+        <li>break, continue</li>
+        <li>return</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Functions</h3>
+      <ul>
+        <li>def with type annotations</li>
+        <li>recursion</li>
+        <li>nested calls</li>
+        <li>early return</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Classes &amp; OO</h3>
+      <ul>
+        <li>single inheritance</li>
+        <li>virtual dispatch (vtables)</li>
+        <li>super()</li>
+        <li>isinstance()</li>
+        <li>field inference from __init__</li>
+        <li>implicit upcasting</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Dunder methods</h3>
+      <ul>
+        <li>__init__, __str__, __repr__</li>
+        <li>__eq__, __ne__</li>
+        <li>__lt__, __le__, __gt__, __ge__</li>
+        <li>__add__, __sub__, __mul__</li>
+        <li>__truediv__, __floordiv__, __mod__</li>
+        <li>__neg__, __pow__</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Imports</h3>
+      <ul>
+        <li>import module</li>
+        <li>import module as alias</li>
+        <li>from module import name</li>
+        <li>multi-file projects</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Operators</h3>
+      <ul>
+        <li>arithmetic: + - * / // % **</li>
+        <li>comparison: == != &lt; &gt; &lt;= &gt;=</li>
+        <li>logical: and, or, not</li>
+        <li>bitwise: &amp; | ^ ~ &lt;&lt; &gt;&gt;</li>
+        <li>augmented assign: += -= …</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Runtime</h3>
+      <ul>
+        <li>print, range, len</li>
+        <li>int(), float(), str(), bool()</li>
+        <li>isinstance()</li>
+        <li>conservative GC (bdwgc)</li>
+        <li>list/str/map indexing</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>What&rsquo;s not supported</h2>
+  <ul class="check-list no">
+    <li>multiple inheritance, MRO</li>
+    <li>decorators (@property, @staticmethod, @classmethod, …)</li>
+    <li>generators, yield, async / await</li>
+    <li>exceptions (try / except / raise / finally)</li>
+    <li>dynamic typing &mdash; every name needs an annotation at first binding</li>
+    <li>*args, **kwargs, default arguments</li>
+    <li>lambdas, nested / closure functions</li>
+    <li>comprehensions (list / dict / set / generator)</li>
+    <li>metaclasses, __new__, __slots__, descriptors</li>
+    <li>sets, tuples, bytes, bytearray</li>
+    <li>context managers (with)</li>
+    <li>eval, exec, getattr / setattr / hasattr</li>
+    <li>monkey-patching &mdash; classes are closed after definition</li>
+    <li>most of the standard library</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Try it</h2>
+  <div class="step">
+    <div class="step-label">1 / Prerequisites</div>
+<pre><code># macOS
+brew install go llvm bdw-gc
+
+# Debian / Ubuntu
+apt install golang clang libgc-dev</code></pre>
+  </div>
+  <div class="step">
+    <div class="step-label">2 / Build</div>
+<pre><code>git clone https://github.com/hvuhsg/spython-llvm
+cd spython-llvm
+go build -o spython ./cmd/spython</code></pre>
+  </div>
+  <div class="step">
+    <div class="step-label">3 / Run a program</div>
+<pre><code>./spython run testdata/class_polymorphism/main.spy</code></pre>
+  </div>
+</section>
+
+<footer>
+  <span>spython &middot; a compiler experiment</span>
+  <span><a href="https://github.com/hvuhsg/spython-llvm">github.com/hvuhsg/spython-llvm</a></span>
+</footer>
+
+</main>
+</body>
+</html>
