@@ -8,7 +8,7 @@ class Named:
         self.name = name
         self.count = count
 
-p: Point = Point(3, 4)
+p = Point(3, 4)
 print(p)
-n: Named = Named("alice", 42)
+n = Named("alice", 42)
 print(n)

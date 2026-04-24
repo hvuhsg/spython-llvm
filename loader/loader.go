@@ -18,6 +18,12 @@ type Module struct {
 	Checker *types.Checker
 	Deps    []string
 	IsEntry bool
+	// CFile is the path to the sibling C implementation for this module, if any.
+	// Populated for modules that contain one or more @extern function
+	// declarations and where <module>.c exists next to <module>.spy.
+	CFile string
+	// LinkFlags holds flags parsed from `// spython-link:` directives in CFile.
+	LinkFlags []string
 }
 
 type Result struct {
@@ -48,8 +54,37 @@ func Load(entryFile string) (*Result, error) {
 		return nil, err
 	}
 
-	// Type-check each module in topological order (entry last).
+	// Synthetic builtins module owns the auto-injected exception hierarchy.
+	// It is type-checked first to produce a single, canonical set of
+	// ClassType pointers; every other module then has those pointers
+	// injected into its env so `raise X` / `except T` work everywhere
+	// (including stdlib modules), and so isinstance checks via pointer
+	// identity continue to hold across module boundaries.
+	builtins, err := loadBuiltinsModule()
+	if err != nil {
+		return nil, err
+	}
+	// Shared class-ID counter: every checker in this Load increments the
+	// same counter so each ClassType.ClassID is unique program-wide. The
+	// runtime's isinstance walks vtable->class_id chains and a duplicate
+	// would silently false-match — see the try_rethrow regression that
+	// prompted this.
+	var classIDCtr int
+	builtinsChecker, err := checkBuiltinsModule(builtins, &classIDCtr)
+	if err != nil {
+		return nil, err
+	}
+	builtins.Checker = builtinsChecker
+	builtinClasses := builtinsChecker.Env.Classes()
+	// Builtins comes first so codegen registers its classes (and their
+	// vtables) before any user class that might inherit from them.
+	l.order = append([]*Module{builtins}, l.order...)
+
+	// Type-check user modules in topological order (entry last).
 	for _, m := range l.order {
+		if m == builtins {
+			continue
+		}
 		imports := map[string]*types.ModuleType{}
 		for _, dep := range m.Deps {
 			depMod := l.findByID(dep)
@@ -62,6 +97,8 @@ func Load(entryFile string) (*Result, error) {
 			}
 		}
 		checker := types.NewCheckerWithImports(m.ID, imports)
+		checker.SetClassIDSource(&classIDCtr)
+		checker.InjectBuiltins(builtinClasses)
 		if err := checker.Check(m.Program); err != nil {
 			return nil, fmt.Errorf("%s: %w", m.Path, err)
 		}
@@ -121,6 +158,38 @@ func (l *loader) loadPath(absPath string, isEntry bool) (*Module, error) {
 		}
 	}
 
+	// If this module has any @extern declarations that rely on default name
+	// mangling (spy_<module>_<name>), look for a sibling C implementation file
+	// that provides those symbols. Modules whose externs all specify an
+	// explicit ExternSymbol are binding to symbols linked from elsewhere and
+	// do not require a sibling .c.
+	if needsSiblingC(program) {
+		cPath := strings.TrimSuffix(absPath, ".spy") + ".c"
+		if _, err := os.Stat(cPath); err != nil {
+			return nil, fmt.Errorf("%s: module %q has @extern declarations with default mangling but sibling %s not found",
+				absPath, id, filepath.Base(cPath))
+		}
+		flags, err := ParseLinkDirectives(cPath)
+		if err != nil {
+			return nil, err
+		}
+		m.CFile = cPath
+		m.LinkFlags = flags
+	} else if hasExternDecls(program) {
+		// Still attach a sibling .c if one happens to exist — lets users opt in
+		// to providing extra symbols alongside a file that uses only explicit
+		// ExternSymbols.
+		cPath := strings.TrimSuffix(absPath, ".spy") + ".c"
+		if _, err := os.Stat(cPath); err == nil {
+			flags, err := ParseLinkDirectives(cPath)
+			if err != nil {
+				return nil, err
+			}
+			m.CFile = cPath
+			m.LinkFlags = flags
+		}
+	}
+
 	l.cache[absPath] = m
 	l.grey[absPath] = true
 	l.stack = append(l.stack, absPath)
@@ -139,9 +208,9 @@ func (l *loader) loadPath(absPath string, isEntry bool) (*Module, error) {
 		default:
 			continue
 		}
-		depPath := filepath.Join(dir, depName+".spy")
-		if _, err := os.Stat(depPath); err != nil {
-			return nil, fmt.Errorf("%s: cannot resolve import %q: no %s.spy in %s", absPath, depName, depName, dir)
+		depPath, err := resolveImport(dir, depName)
+		if err != nil {
+			return nil, fmt.Errorf("%s: cannot resolve import %q: %w", absPath, depName, err)
 		}
 		depAbs, err := filepath.Abs(depPath)
 		if err != nil {
@@ -168,20 +237,95 @@ func moduleIDFromPath(absPath string) string {
 	return strings.TrimSuffix(filepath.Base(absPath), ".spy")
 }
 
+// resolveImport looks for <name>.spy first in dir, then in the stdlib search
+// paths. Returns the absolute path of the first match.
+func resolveImport(dir, name string) (string, error) {
+	local := filepath.Join(dir, name+".spy")
+	if _, err := os.Stat(local); err == nil {
+		return local, nil
+	}
+	for _, root := range stdlibSearchPaths() {
+		p := filepath.Join(root, name+".spy")
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("no %s.spy in %s or stdlib", name, dir)
+}
+
+// stdlibSearchPaths returns directories to search for stdlib modules, in
+// priority order: SPYTHON_HOME/stdlib, then directories relative to the
+// spython executable, then a development-tree fallback.
+func stdlibSearchPaths() []string {
+	var paths []string
+	if home := os.Getenv("SPYTHON_HOME"); home != "" {
+		paths = append(paths, filepath.Join(home, "stdlib"))
+	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		paths = append(paths,
+			filepath.Join(dir, "stdlib"),
+			filepath.Join(dir, "..", "stdlib"),
+		)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		paths = append(paths,
+			filepath.Join(wd, "stdlib"),
+			filepath.Join(wd, "..", "stdlib"),
+		)
+	}
+	return paths
+}
+
+// hasExternDecls reports whether program contains any @extern function
+// declarations at top level.
+func hasExternDecls(program *parser.Program) bool {
+	if program == nil {
+		return false
+	}
+	for _, stmt := range program.Stmts {
+		if fd, ok := stmt.(*parser.FuncDef); ok && fd.Extern {
+			return true
+		}
+	}
+	return false
+}
+
+// needsSiblingC reports whether the program contains at least one @extern
+// declaration that relies on default name mangling — i.e. one without an
+// explicit ExternSymbol. Such declarations expect their symbol to be provided
+// by the sibling <module>.c file.
+func needsSiblingC(program *parser.Program) bool {
+	if program == nil {
+		return false
+	}
+	for _, stmt := range program.Stmts {
+		if fd, ok := stmt.(*parser.FuncDef); ok && fd.Extern && fd.ExternSymbol == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // validateImportedTopLevel rejects non-entry modules that contain anything at
-// top level other than def, typed constant assignments, and import statements.
+// top level other than def, class, constant assignments, and import statements.
+// Constants may omit the type annotation (the checker infers it from the RHS)
+// but each name may only be bound once — rebinding would be a reassignment,
+// which is not allowed in imported modules.
 func validateImportedTopLevel(program *parser.Program, modID string) error {
+	seen := make(map[string]bool)
 	for _, stmt := range program.Stmts {
 		switch s := stmt.(type) {
-		case *parser.FuncDef, *parser.ImportStmt, *parser.FromImportStmt:
+		case *parser.FuncDef, *parser.ImportStmt, *parser.FromImportStmt, *parser.ClassDef:
 			// allowed
 		case *parser.AssignStmt:
-			if s.TypeAnn == nil {
-				return fmt.Errorf("module %s: top-level reassignments not allowed in imported modules (line %d)", modID, s.Pos.Line)
-			}
 			if !isConstExpr(s.Value) {
 				return fmt.Errorf("module %s: top-level assignment of %s must have a constant-literal value in imported modules (line %d)", modID, s.Name, s.Pos.Line)
 			}
+			if seen[s.Name] {
+				return fmt.Errorf("module %s: top-level reassignments not allowed in imported modules (line %d)", modID, s.Pos.Line)
+			}
+			seen[s.Name] = true
 		default:
 			return fmt.Errorf("module %s: only def and typed constant assignments are allowed at top level (got %T at line %d)", modID, stmt, s.GetPos().Line)
 		}

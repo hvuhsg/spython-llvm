@@ -1,0 +1,109 @@
+# stdlib/os.spy — POSIX filesystem and process primitives.
+#
+# Functions that can fail raise the appropriate OSError subclass
+# (FileNotFoundError, PermissionError, IsADirectoryError) via the shared
+# error classifier in os.c.
+#
+# Usage:
+#   import os
+#   home: str = os.getenv("HOME")
+#   os.chdir("/tmp")
+#   names: list[str] = os.listdir(".")
+
+@extern
+def getenv(name: str) -> str: ...
+
+@extern
+def getcwd() -> str: ...
+
+@extern
+def getpid() -> int: ...
+
+# Mutating operations. Return 0 on success, -1 on failure; the spy wrapper
+# consults _last_error_class() and raises.
+
+@extern
+def _chdir(path: str) -> int: ...
+
+@extern
+def _mkdir(path: str) -> int: ...
+
+@extern
+def _remove(path: str) -> int: ...
+
+@extern
+def _rmdir(path: str) -> int: ...
+
+@extern
+def _rename(src: str, dst: str) -> int: ...
+
+# Returns: 0 ok, 1 ENOENT, 2 EACCES, 3 EISDIR, 4 other. Same codes as io.
+@extern
+def _last_error_class() -> int: ...
+
+# _stat_mode returns the POSIX mode (st_mode) on success or -1 on error.
+# Used by the ospath module for exists/isfile/isdir checks without having
+# to surface a real stat struct across the FFI boundary.
+@extern
+def _stat_mode(path: str) -> int: ...
+
+# Directory listing uses a two-call dance: _listdir_read opens the dir,
+# reads every entry into a static C-side buffer, and returns the count (or
+# -1 on error). _listdir_entry(i) fetches the i-th name. The spy wrapper
+# below hides the non-reentrant state.
+
+@extern
+def _listdir_read(path: str) -> int: ...
+
+@extern
+def _listdir_entry(i: int) -> str: ...
+
+def _raise_os_error(path: str) -> None:
+    cls: int = _last_error_class()
+    if cls == 1:
+        e1: FileNotFoundError = FileNotFoundError(path)
+        raise e1
+    if cls == 2:
+        e2: PermissionError = PermissionError(path)
+        raise e2
+    if cls == 3:
+        e3: IsADirectoryError = IsADirectoryError(path)
+        raise e3
+    e: OSError = OSError(path)
+    raise e
+
+def chdir(path: str) -> None:
+    rc: int = _chdir(path)
+    if rc < 0:
+        _raise_os_error(path)
+
+def mkdir(path: str) -> None:
+    rc: int = _mkdir(path)
+    if rc < 0:
+        _raise_os_error(path)
+
+def remove(path: str) -> None:
+    rc: int = _remove(path)
+    if rc < 0:
+        _raise_os_error(path)
+
+def rmdir(path: str) -> None:
+    rc: int = _rmdir(path)
+    if rc < 0:
+        _raise_os_error(path)
+
+def rename(src: str, dst: str) -> None:
+    rc: int = _rename(src, dst)
+    if rc < 0:
+        _raise_os_error(src)
+
+def listdir(path: str) -> list[str]:
+    n: int = _listdir_read(path)
+    if n < 0:
+        _raise_os_error(path)
+    out: list[str] = []
+    i: int = 0
+    while i < n:
+        out.append(_listdir_entry(i))
+        i = i + 1
+    return out

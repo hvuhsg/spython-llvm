@@ -1,0 +1,13 @@
+from io import open, File
+
+path = "/tmp/spython_io_basic.txt"
+
+w: File = open(path, "w")
+n = w.write("hello, world\n")
+print(n)
+w.close()
+
+r: File = open(path, "r")
+data = r.read()
+print(data)
+r.close()

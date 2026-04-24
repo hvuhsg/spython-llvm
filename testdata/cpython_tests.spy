@@ -1,11 +1,11 @@
 # Tests derived from CPython test suite
 # Each test prints "PASS" or "FAIL <description>"
 
-passed: int = 0
-failed: int = 0
+passed = 0
+failed = 0
 
 # ============ test_augassign.py: testBasic ============
-x: int = 2
+x = 2
 x += 1
 x *= 2
 x **= 2
@@ -20,7 +20,7 @@ else:
     print("FAIL augassign_basic_int")
 
 # augmented assignment with bitwise
-y: int = 2
+y = 2
 y &= 3
 if y == 2:
     passed += 1
@@ -395,7 +395,7 @@ else:
 # ============ test_binop.py: GCD algorithm ============
 def gcd(aa: int, bb: int) -> int:
     while aa != 0:
-        tmp: int = bb % aa
+        tmp = bb % aa
         bb = aa
         aa = tmp
     return bb
@@ -577,7 +577,7 @@ else:
     print("FAIL map_len_after_set")
 
 # ============ For/range tests ============
-total: int = 0
+total = 0
 for i in range(10):
     total += i
 if total == 45:
@@ -587,7 +587,7 @@ else:
     failed += 1
     print("FAIL range_sum")
 
-total2: int = 0
+total2 = 0
 for j in range(5, 10):
     total2 += j
 if total2 == 35:
@@ -597,7 +597,7 @@ else:
     failed += 1
     print("FAIL range_start_stop")
 
-total3: int = 0
+total3 = 0
 for k in range(0, 20, 3):
     total3 += k
 if total3 == 63:
@@ -608,8 +608,8 @@ else:
     print("FAIL range_step")
 
 # ============ While loop with break ============
-counter: int = 0
-w: int = 0
+counter = 0
+w = 0
 while True:
     if w == 5:
         break
@@ -623,7 +623,7 @@ else:
     print("FAIL while_break")
 
 # ============ For with continue ============
-evens: int = 0
+evens = 0
 for ci in range(10):
     if ci % 2 != 0:
         continue
@@ -663,7 +663,7 @@ else:
     print("FAIL fib_10")
 
 # ============ String indexing ============
-s: str = "hello"
+s = "hello"
 if s[0] == "h":
     passed += 1
     print("PASS str_index_0")
@@ -679,7 +679,7 @@ else:
     print("FAIL str_index_4")
 
 # ============ Nested if ============
-val: int = 42
+val = 42
 if val > 0:
     if val > 100:
         print("FAIL nested_if")
@@ -693,7 +693,7 @@ if val > 0:
             print("FAIL nested_if")
 
 # ============ Nested loops ============
-count: int = 0
+count = 0
 for ni in range(5):
     for nj in range(5):
         count += 1
@@ -705,7 +705,7 @@ else:
     print("FAIL nested_loops")
 
 # ============ Short-circuit and ============
-sc_and: int = 0
+sc_and = 0
 if False and True:
     sc_and = 1
 if sc_and == 0:
@@ -716,7 +716,7 @@ else:
     print("FAIL short_circuit_and")
 
 # ============ Short-circuit or ============
-sc_or: int = 0
+sc_or = 0
 if True or False:
     sc_or = 1
 if sc_or == 1:

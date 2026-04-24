@@ -1,0 +1,13 @@
+import binascii
+
+print(binascii.hexlify(""))
+print(binascii.hexlify("abc"))
+print(binascii.hexlify("Hello, world!"))
+
+print(binascii.unhexlify(""))
+print(binascii.unhexlify("616263"))
+print(binascii.unhexlify("48656c6c6f"))
+
+print(binascii.crc32(""))
+print(binascii.crc32("abc"))
+print(binascii.crc32("123456789"))

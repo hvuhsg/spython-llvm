@@ -14,29 +14,70 @@ type Checker struct {
 
 	// Method-body context (populated only while checking a method's body).
 	currentClass *ClassType // nil when not inside a class body
-	classIDCtr   int        // monotonically increasing class id, starting at 1
+	// classIDSrc points at the next-id counter used by registerClassType.
+	// Defaults to a per-checker int so direct NewChecker users still work,
+	// but the loader overrides it via SetClassIDSource so every class across
+	// every module in one Load gets a unique id — required for isinstance
+	// (which compares class_id at runtime) to be correct across modules.
+	classIDSrc *int
+
+	// Exception-handler depth tracking. Non-zero inside an `except` clause
+	// (so raise-class checks could later be relaxed for bare `raise`, not in
+	// v1). `finallyDepth` is set while checking a `finally` body and bans
+	// `return`, `break`, `continue` there — v1 scope restriction.
+	finallyDepth int
+
+	// typeHint is an expected-type bias set by statements that have a
+	// concrete annotation (e.g. `x: list[str] = []`). Expression checkers
+	// may consult it when literal syntax is ambiguous — today only the
+	// empty list literal uses it. Cleared by each setter via defer/restore.
+	typeHint Type
 }
 
 func NewChecker() *Checker {
-	c := &Checker{Env: NewEnv()}
+	var ctr int
+	c := &Checker{Env: NewEnv(), classIDSrc: &ctr}
 	c.registerBuiltins()
 	return c
 }
 
 func NewCheckerWithImports(moduleID string, imports map[string]*ModuleType) *Checker {
+	var ctr int
 	c := &Checker{
-		Env:      NewEnv(),
-		ModuleID: moduleID,
-		imports:  imports,
+		Env:        NewEnv(),
+		ModuleID:   moduleID,
+		imports:    imports,
+		classIDSrc: &ctr,
 	}
 	c.registerBuiltins()
 	return c
+}
+
+// SetClassIDSource overrides the per-checker class ID counter with a
+// caller-owned counter. The loader uses this to share a single sequence
+// across every module in one compilation so isinstance class_id comparisons
+// are unique program-wide.
+func (c *Checker) SetClassIDSource(p *int) {
+	c.classIDSrc = p
 }
 
 func (c *Checker) registerBuiltins() {
 	// print is special — handled in checkCallExpr
 	// len is special — handled in checkCallExpr
 	// range is special — handled in checkCallExpr
+}
+
+// InjectBuiltins makes the given classes available in this checker's env as
+// both values (so `Exception(msg)` / `isinstance(x, Exception)` work) and as
+// class names (so type annotations and base-class references resolve). The
+// loader uses this to share a single canonical Exception hierarchy across
+// every module — pointer identity must hold for IsSubclassOf to keep working
+// across module boundaries. Must be called before Check().
+func (c *Checker) InjectBuiltins(classes map[string]*ClassType) {
+	for name, ct := range classes {
+		c.Env.DefineClass(name, ct)
+		c.Env.Define(name, ct)
+	}
 }
 
 func (c *Checker) Check(program *parser.Program) error {
@@ -161,12 +202,18 @@ func (c *Checker) processFromImportStmt(s *parser.FromImportStmt, localNames map
 			return fmt.Errorf("%d:%d: name collision: %q is both imported from %s and defined at top level", s.Pos.Line, s.Pos.Col, effective, s.Module)
 		}
 		c.Env.Define(effective, t)
+		// Mirror imported classes into the class table so they resolve in
+		// type annotations (`f: File = ...`) and as base classes.
+		if ct, ok := t.(*ClassType); ok {
+			c.Env.DefineClass(effective, ct)
+		}
 	}
 	return nil
 }
 
-// Exports returns the public surface of this module: top-level functions and
-// top-level typed assignments. Must be called after Check() succeeds.
+// Exports returns the public surface of this module: top-level functions,
+// classes, and top-level constant assignments (annotated or inferred).
+// Must be called after Check() succeeds.
 func (c *Checker) Exports(program *parser.Program) map[string]Type {
 	out := map[string]Type{}
 	if program == nil {
@@ -178,11 +225,13 @@ func (c *Checker) Exports(program *parser.Program) map[string]Type {
 			if t, ok := c.Env.Lookup(s.Name); ok {
 				out[s.Name] = t
 			}
+		case *parser.ClassDef:
+			if ct, ok := c.Env.LookupClass(s.Name); ok {
+				out[s.Name] = ct
+			}
 		case *parser.AssignStmt:
-			if s.TypeAnn != nil {
-				if t, ok := c.Env.Lookup(s.Name); ok {
-					out[s.Name] = t
-				}
+			if t, ok := c.Env.Lookup(s.Name); ok {
+				out[s.Name] = t
 			}
 		}
 	}
@@ -210,9 +259,48 @@ func (c *Checker) registerFuncSignature(s *parser.FuncDef) error {
 		}
 	}
 
-	funcType := &FuncType{Params: paramTypes, Return: retType, DefinedIn: c.ModuleID}
+	if s.Extern {
+		for i, pt := range paramTypes {
+			if !isFFIMarshallable(pt) {
+				return fmt.Errorf("%d:%d: @extern %s: parameter %s has non-marshallable type %s",
+					s.Pos.Line, s.Pos.Col, s.Name, s.Params[i].Name, pt)
+			}
+		}
+		if !isFFIMarshallableReturn(retType) {
+			return fmt.Errorf("%d:%d: @extern %s: return type %s is not marshallable",
+				s.Pos.Line, s.Pos.Col, s.Name, retType)
+		}
+	}
+
+	funcType := &FuncType{
+		Params:       paramTypes,
+		Return:       retType,
+		DefinedIn:    c.ModuleID,
+		ExternSymbol: s.ExternSymbol,
+	}
 	c.Env.Define(s.Name, funcType)
 	return nil
+}
+
+// isFFIMarshallable reports whether t is an allowed parameter type for an
+// @extern function in v1. Current set: int, float, bool, str, bytes, bytearray.
+// Lists, maps, tuples, class instances, and None are not yet supported as
+// parameters.
+func isFFIMarshallable(t Type) bool {
+	switch t.(type) {
+	case *IntType, *FloatType, *BoolType, *StrType, *BytesType, *BytearrayType:
+		return true
+	}
+	return false
+}
+
+// isFFIMarshallableReturn extends the marshallable set with None for return
+// position (C void).
+func isFFIMarshallableReturn(t Type) bool {
+	if _, ok := t.(*NoneType); ok {
+		return true
+	}
+	return isFFIMarshallable(t)
 }
 
 // registerClassType registers a class name and its base-class link. It does
@@ -229,7 +317,7 @@ func (c *Checker) registerClassType(s *parser.ClassDef) error {
 		}
 		base = b
 	}
-	c.classIDCtr++
+	*c.classIDSrc++
 	ct := &ClassType{
 		Name:       s.Name,
 		Base:       base,
@@ -237,7 +325,7 @@ func (c *Checker) registerClassType(s *parser.ClassDef) error {
 		Methods:    map[string]*FuncType{},
 		OwnMethods: map[string]bool{},
 		MethodSrc:  map[string]*ClassType{},
-		ClassID:    c.classIDCtr,
+		ClassID:    *c.classIDSrc,
 		DefinedIn:  c.ModuleID,
 	}
 	c.Env.DefineClass(s.Name, ct)
@@ -438,6 +526,20 @@ func (c *Checker) inferFieldsFromStmts(ct *ClassType, stmts []parser.Stmt) error
 			if err := c.checkForStmt(s); err != nil {
 				return err
 			}
+		case *parser.TryStmt:
+			if err := c.inferFieldsFromStmts(ct, s.Body); err != nil {
+				return err
+			}
+			for _, ec := range s.Excepts {
+				if err := c.inferFieldsFromStmts(ct, ec.Body); err != nil {
+					return err
+				}
+			}
+			if s.HasFinally {
+				if err := c.inferFieldsFromStmts(ct, s.FinallyBody); err != nil {
+					return err
+				}
+			}
 		case *parser.ReturnStmt:
 			// Bare return ok; explicit return value disallowed from __init__.
 			if s.Value != nil {
@@ -466,6 +568,8 @@ func (c *Checker) checkStmt(stmt parser.Stmt) error {
 		return c.checkAugAssignStmt(s)
 	case *parser.IndexAssignStmt:
 		return c.checkIndexAssignStmt(s)
+	case *parser.MultiAssignStmt:
+		return c.checkMultiAssignStmt(s)
 	case *parser.AttrAssignStmt:
 		return c.checkAttrAssignStmt(s)
 	case *parser.IfStmt:
@@ -479,12 +583,104 @@ func (c *Checker) checkStmt(stmt parser.Stmt) error {
 	case *parser.ClassDef:
 		return c.checkClassDef(s)
 	case *parser.ReturnStmt:
+		if c.finallyDepth > 0 {
+			return fmt.Errorf("%d:%d: `return` inside a `finally` block is not supported in v1",
+				s.Pos.Line, s.Pos.Col)
+		}
 		return c.checkReturnStmt(s)
-	case *parser.BreakStmt, *parser.ContinueStmt:
+	case *parser.BreakStmt:
+		if c.finallyDepth > 0 {
+			return fmt.Errorf("%d:%d: `break` inside a `finally` block is not supported in v1",
+				s.Pos.Line, s.Pos.Col)
+		}
 		return nil
+	case *parser.ContinueStmt:
+		if c.finallyDepth > 0 {
+			return fmt.Errorf("%d:%d: `continue` inside a `finally` block is not supported in v1",
+				s.Pos.Line, s.Pos.Col)
+		}
+		return nil
+	case *parser.TryStmt:
+		return c.checkTryStmt(s)
+	case *parser.RaiseStmt:
+		return c.checkRaiseStmt(s)
 	default:
 		return fmt.Errorf("unknown statement type: %T", stmt)
 	}
+}
+
+func (c *Checker) checkTryStmt(s *parser.TryStmt) error {
+	// Try body uses the current scope; no push/pop needed.
+	for _, stmt := range s.Body {
+		if err := c.checkStmt(stmt); err != nil {
+			return err
+		}
+	}
+	excBase, _ := c.Env.LookupClass("Exception")
+	for i, ec := range s.Excepts {
+		var excClass *ClassType
+		if ec.ExcType != nil {
+			t := c.resolveTypeAnnotation(ec.ExcType)
+			if inst, ok := t.(*InstanceType); ok {
+				excClass = inst.Class
+			} else {
+				return fmt.Errorf("%d:%d: except target must name a class, got %s",
+					ec.Pos.Line, ec.Pos.Col, ec.ExcType.Name)
+			}
+			if excBase != nil && !excClass.IsSubclassOf(excBase) {
+				return fmt.Errorf("%d:%d: catching classes that do not inherit from Exception is not allowed (%s)",
+					ec.Pos.Line, ec.Pos.Col, excClass.Name)
+			}
+		} else if i != len(s.Excepts)-1 {
+			return fmt.Errorf("%d:%d: bare `except:` must be the last except clause",
+				ec.Pos.Line, ec.Pos.Col)
+		}
+		c.Env.Push()
+		if ec.VarName != "" {
+			if excClass == nil {
+				return fmt.Errorf("%d:%d: bare `except:` cannot bind a variable — use `except T as %s:` instead",
+					ec.Pos.Line, ec.Pos.Col, ec.VarName)
+			}
+			c.Env.Define(ec.VarName, &InstanceType{Class: excClass})
+		}
+		for _, stmt := range ec.Body {
+			if err := c.checkStmt(stmt); err != nil {
+				c.Env.Pop()
+				return err
+			}
+		}
+		c.Env.Pop()
+	}
+	if s.HasFinally {
+		c.finallyDepth++
+		for _, stmt := range s.FinallyBody {
+			if err := c.checkStmt(stmt); err != nil {
+				c.finallyDepth--
+				return err
+			}
+		}
+		c.finallyDepth--
+	}
+	return nil
+}
+
+func (c *Checker) checkRaiseStmt(s *parser.RaiseStmt) error {
+	t, err := c.checkExpr(s.Value)
+	if err != nil {
+		return err
+	}
+	inst, ok := t.(*InstanceType)
+	if !ok {
+		return fmt.Errorf("%d:%d: exceptions must derive from Exception, cannot raise %s",
+			s.Pos.Line, s.Pos.Col, t)
+	}
+	if excBase, ok := c.Env.LookupClass("Exception"); ok {
+		if !inst.Class.IsSubclassOf(excBase) {
+			return fmt.Errorf("%d:%d: %s does not inherit from Exception",
+				s.Pos.Line, s.Pos.Col, inst.Class.Name)
+		}
+	}
+	return nil
 }
 
 func (c *Checker) checkAttrAssignStmt(s *parser.AttrAssignStmt) error {
@@ -556,13 +752,22 @@ func (c *Checker) checkMethodBody(ct *ClassType, m *parser.FuncDef) error {
 }
 
 func (c *Checker) checkAssignStmt(s *parser.AssignStmt) error {
+	// If the LHS carries an annotation, bias the RHS check toward that type
+	// so ambiguous literals (empty list) can resolve.
+	var annType Type
+	if s.TypeAnn != nil {
+		annType = c.resolveTypeAnnotation(s.TypeAnn)
+		prev := c.typeHint
+		c.typeHint = annType
+		defer func() { c.typeHint = prev }()
+	}
+
 	valType, err := c.checkExpr(s.Value)
 	if err != nil {
 		return err
 	}
 
 	if s.TypeAnn != nil {
-		annType := c.resolveTypeAnnotation(s.TypeAnn)
 		if annType == nil {
 			return fmt.Errorf("%d:%d: unknown type: %s", s.TypeAnn.Pos.Line, s.TypeAnn.Pos.Col, s.TypeAnn.Name)
 		}
@@ -570,15 +775,18 @@ func (c *Checker) checkAssignStmt(s *parser.AssignStmt) error {
 			return fmt.Errorf("%d:%d: cannot assign %s to %s", s.Pos.Line, s.Pos.Col, valType, annType)
 		}
 		c.Env.Define(s.Name, annType)
-	} else {
-		// Reassignment without type annotation
-		existing, ok := c.Env.Lookup(s.Name)
-		if !ok {
-			return fmt.Errorf("%d:%d: undefined variable: %s", s.Pos.Line, s.Pos.Col, s.Name)
-		}
+	} else if existing, ok := c.Env.Lookup(s.Name); ok {
+		// Reassignment: verify compatibility with existing type.
 		if !IsAssignable(valType, existing) {
 			return fmt.Errorf("%d:%d: cannot assign %s to %s", s.Pos.Line, s.Pos.Col, valType, existing)
 		}
+	} else {
+		// First binding without annotation: infer type from the RHS.
+		if _, isNone := valType.(*NoneType); isNone {
+			return fmt.Errorf("%d:%d: cannot infer type of %s from None; add a type annotation",
+				s.Pos.Line, s.Pos.Col, s.Name)
+		}
+		c.Env.Define(s.Name, valType)
 	}
 
 	return nil
@@ -599,6 +807,33 @@ func (c *Checker) checkAugAssignStmt(s *parser.AugAssignStmt) error {
 		return fmt.Errorf("%d:%d: cannot use %s with %s in augmented assignment", s.Pos.Line, s.Pos.Col, valType, varType)
 	}
 
+	return nil
+}
+
+func (c *Checker) checkMultiAssignStmt(s *parser.MultiAssignStmt) error {
+	vt, err := c.checkExpr(s.Value)
+	if err != nil {
+		return err
+	}
+	tt, ok := vt.(*TupleType)
+	if !ok {
+		return fmt.Errorf("%d:%d: multi-assign RHS must be a tuple, got %s", s.Pos.Line, s.Pos.Col, vt)
+	}
+	if len(tt.Elements) != len(s.Names) {
+		return fmt.Errorf("%d:%d: tuple arity mismatch: %d names vs %d elements",
+			s.Pos.Line, s.Pos.Col, len(s.Names), len(tt.Elements))
+	}
+	for i, name := range s.Names {
+		// If name exists already, require compatible type; otherwise bind it.
+		if existing, ok := c.Env.Lookup(name); ok {
+			if !IsAssignable(tt.Elements[i], existing) {
+				return fmt.Errorf("%d:%d: cannot assign %s to %s (declared %s)",
+					s.Pos.Line, s.Pos.Col, tt.Elements[i], name, existing)
+			}
+		} else {
+			c.Env.Define(name, tt.Elements[i])
+		}
+	}
 	return nil
 }
 
@@ -630,6 +865,13 @@ func (c *Checker) checkIndexAssignStmt(s *parser.IndexAssignStmt) error {
 		}
 		if !t.Value.Equals(valType) {
 			return fmt.Errorf("%d:%d: cannot assign %s to map value type %s", s.Pos.Line, s.Pos.Col, valType, t.Value)
+		}
+	case *BytearrayType:
+		if _, ok := idxType.(*IntType); !ok {
+			return fmt.Errorf("%d:%d: bytearray index must be int, got %s", s.Pos.Line, s.Pos.Col, idxType)
+		}
+		if _, ok := valType.(*IntType); !ok {
+			return fmt.Errorf("%d:%d: bytearray element must be int (0-255), got %s", s.Pos.Line, s.Pos.Col, valType)
 		}
 	default:
 		return fmt.Errorf("%d:%d: cannot index-assign to %s", s.Pos.Line, s.Pos.Col, objType)
@@ -737,6 +979,12 @@ func (c *Checker) checkForStmt(s *parser.ForStmt) error {
 }
 
 func (c *Checker) checkFuncDef(s *parser.FuncDef) error {
+	// Extern functions have no body — their signature was already validated in
+	// registerFuncSignature, which also enforces the marshallable type set.
+	if s.Extern {
+		return nil
+	}
+
 	// Build function type
 	paramTypes := []Type{}
 	for _, p := range s.Params {
@@ -812,6 +1060,8 @@ func (c *Checker) checkExpr(expr parser.Expr) (Type, error) {
 		t = &FloatType{}
 	case *parser.StrLit:
 		t = &StrType{}
+	case *parser.BytesLit:
+		t = &BytesType{}
 	case *parser.BoolLit:
 		t = &BoolType{}
 	case *parser.NoneLit:
@@ -832,6 +1082,8 @@ func (c *Checker) checkExpr(expr parser.Expr) (Type, error) {
 		t, err = c.checkListLit(e)
 	case *parser.MapLit:
 		t, err = c.checkMapLit(e)
+	case *parser.TupleLit:
+		t, err = c.checkTupleLit(e)
 	default:
 		return nil, fmt.Errorf("unknown expression type: %T", expr)
 	}
@@ -1039,7 +1291,7 @@ func (c *Checker) checkCallExpr(e *parser.CallExpr) (Type, error) {
 				return nil, err
 			}
 			switch argType.(type) {
-			case *StrType, *ListType, *MapType:
+			case *StrType, *BytesType, *BytearrayType, *ListType, *MapType:
 				return &IntType{}, nil
 			}
 			return nil, fmt.Errorf("%d:%d: len() not supported for %s", e.Pos.Line, e.Pos.Col, argType)
@@ -1098,6 +1350,34 @@ func (c *Checker) checkCallExpr(e *parser.CallExpr) (Type, error) {
 				return nil, err
 			}
 			return &StrType{}, nil
+
+		case "bytes":
+			if len(e.Args) != 1 {
+				return nil, fmt.Errorf("%d:%d: bytes() takes exactly 1 argument", e.Pos.Line, e.Pos.Col)
+			}
+			argType, err := c.checkExpr(e.Args[0])
+			if err != nil {
+				return nil, err
+			}
+			switch argType.(type) {
+			case *StrType, *BytesType, *BytearrayType:
+				return &BytesType{}, nil
+			}
+			return nil, fmt.Errorf("%d:%d: cannot convert %s to bytes", e.Pos.Line, e.Pos.Col, argType)
+
+		case "bytearray":
+			if len(e.Args) != 1 {
+				return nil, fmt.Errorf("%d:%d: bytearray() takes exactly 1 argument", e.Pos.Line, e.Pos.Col)
+			}
+			argType, err := c.checkExpr(e.Args[0])
+			if err != nil {
+				return nil, err
+			}
+			switch argType.(type) {
+			case *IntType, *BytesType, *BytearrayType:
+				return &BytearrayType{}, nil
+			}
+			return nil, fmt.Errorf("%d:%d: cannot convert %s to bytearray", e.Pos.Line, e.Pos.Col, argType)
 		}
 	}
 
@@ -1179,6 +1459,29 @@ func (c *Checker) checkIndexExpr(e *parser.IndexExpr) (Type, error) {
 			return nil, fmt.Errorf("%d:%d: string index must be int, got %s", e.Pos.Line, e.Pos.Col, idxType)
 		}
 		return &StrType{}, nil
+	case *BytesType:
+		if _, ok := idxType.(*IntType); !ok {
+			return nil, fmt.Errorf("%d:%d: bytes index must be int, got %s", e.Pos.Line, e.Pos.Col, idxType)
+		}
+		// Unlike str[i] (returns a 1-char str), bytes[i] returns an int 0-255.
+		return &IntType{}, nil
+	case *BytearrayType:
+		if _, ok := idxType.(*IntType); !ok {
+			return nil, fmt.Errorf("%d:%d: bytearray index must be int, got %s", e.Pos.Line, e.Pos.Col, idxType)
+		}
+		return &IntType{}, nil
+	case *TupleType:
+		// Tuples hold heterogeneous types — the element type depends on the
+		// concrete index, which therefore must be a compile-time integer
+		// literal so the checker can pick the right slot.
+		lit, ok := e.Index.(*parser.IntLit)
+		if !ok {
+			return nil, fmt.Errorf("%d:%d: tuple index must be an integer literal", e.Pos.Line, e.Pos.Col)
+		}
+		if lit.Value < 0 || int(lit.Value) >= len(t.Elements) {
+			return nil, fmt.Errorf("%d:%d: tuple index %d out of range [0, %d)", e.Pos.Line, e.Pos.Col, lit.Value, len(t.Elements))
+		}
+		return t.Elements[lit.Value], nil
 	}
 
 	return nil, fmt.Errorf("%d:%d: cannot index %s", e.Pos.Line, e.Pos.Col, objType)
@@ -1222,6 +1525,11 @@ func (c *Checker) checkAttrExpr(e *parser.AttrExpr) (Type, error) {
 			// Returns a callable that takes one element and returns None
 			return &FuncType{Params: []Type{t.Elem}, Return: &NoneType{}}, nil
 		}
+	case *BytearrayType:
+		_ = t
+		if e.Attr == "append" {
+			return &FuncType{Params: []Type{&IntType{}}, Return: &NoneType{}}, nil
+		}
 	case *ModuleType:
 		exp, ok := t.Exports[e.Attr]
 		if !ok {
@@ -1258,6 +1566,10 @@ func findInitSig(ct *ClassType) *FuncType {
 
 func (c *Checker) checkListLit(e *parser.ListLit) (Type, error) {
 	if len(e.Elements) == 0 {
+		// Accept when an enclosing annotation tells us the element type.
+		if lt, ok := c.typeHint.(*ListType); ok {
+			return lt, nil
+		}
 		return nil, fmt.Errorf("%d:%d: cannot infer type of empty list literal, use type annotation", e.Pos.Line, e.Pos.Col)
 	}
 
@@ -1339,6 +1651,18 @@ func (c *Checker) checkMapLit(e *parser.MapLit) (Type, error) {
 	return &MapType{Key: keyType, Value: valType}, nil
 }
 
+func (c *Checker) checkTupleLit(e *parser.TupleLit) (Type, error) {
+	elems := make([]Type, len(e.Elements))
+	for i, el := range e.Elements {
+		t, err := c.checkExpr(el)
+		if err != nil {
+			return nil, err
+		}
+		elems[i] = t
+	}
+	return &TupleType{Elements: elems}, nil
+}
+
 // binaryDunderName maps a binary operator token to its corresponding dunder
 // method name. Returns "" for operators without a dunder analogue.
 func binaryDunderName(op string) string {
@@ -1383,6 +1707,10 @@ func (c *Checker) resolveTypeAnnotation(ann *parser.TypeAnnotation) Type {
 		return &BoolType{}
 	case "str":
 		return &StrType{}
+	case "bytes":
+		return &BytesType{}
+	case "bytearray":
+		return &BytearrayType{}
 	case "None":
 		return &NoneType{}
 	case "list":
@@ -1404,6 +1732,19 @@ func (c *Checker) resolveTypeAnnotation(ann *parser.TypeAnnotation) Type {
 			return nil
 		}
 		return &MapType{Key: key, Value: val}
+	case "tuple":
+		if len(ann.Params) == 0 {
+			return &TupleType{Elements: nil}
+		}
+		elems := make([]Type, len(ann.Params))
+		for i, p := range ann.Params {
+			et := c.resolveTypeAnnotation(p)
+			if et == nil {
+				return nil
+			}
+			elems[i] = et
+		}
+		return &TupleType{Elements: elems}
 	}
 	// Fall back to class lookup.
 	if ct, ok := c.Env.LookupClass(ann.Name); ok {

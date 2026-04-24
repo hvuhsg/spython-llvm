@@ -23,7 +23,7 @@ def describe(a: Animal) -> None:
     print(a.name)
     print(a.speak())
 
-d: Dog = Dog("rex")
-c: Cat = Cat("whiskers")
+d = Dog("rex")
+c = Cat("whiskers")
 describe(d)
 describe(c)

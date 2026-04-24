@@ -1,0 +1,10 @@
+i = 0
+while i < 3:
+    i = i + 1
+    try:
+        if i == 2:
+            continue
+        print(i)
+    finally:
+        print("fin")
+print("done")

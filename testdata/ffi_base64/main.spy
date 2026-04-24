@@ -1,0 +1,21 @@
+from base64 import b64encode, b64decode
+
+# Canonical RFC 4648 test vectors.
+print(b64encode(b""))        # (empty)
+print(b64encode(b"f"))       # Zg==
+print(b64encode(b"fo"))      # Zm8=
+print(b64encode(b"foo"))     # Zm9v
+print(b64encode(b"foob"))    # Zm9vYg==
+print(b64encode(b"fooba"))   # Zm9vYmE=
+print(b64encode(b"foobar"))  # Zm9vYmFy
+
+# Round-trip a longer payload; spot-check a few bytes since bytes '==' isn't
+# wired into codegen yet.
+orig: bytes = b"the quick brown fox jumps over the lazy dog"
+encoded: str = b64encode(orig)
+print(encoded)
+decoded: bytes = b64decode(encoded)
+print(len(decoded))
+print(decoded[0])   # 't' = 116
+print(decoded[4])   # 'q' = 113
+print(decoded[42])  # 'g' = 103

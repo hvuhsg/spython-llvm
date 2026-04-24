@@ -43,6 +43,8 @@ func (p *Parser) parseStatement() (Stmt, error) {
 	tok := p.peek()
 
 	switch tok.Type {
+	case lexer.TOKEN_AT:
+		return p.parseDecoratedFuncDef()
 	case lexer.TOKEN_IF:
 		return p.parseIfStmt()
 	case lexer.TOKEN_WHILE:
@@ -67,6 +69,10 @@ func (p *Parser) parseStatement() (Stmt, error) {
 		return p.parseFromImportStmt()
 	case lexer.TOKEN_CLASS:
 		return p.parseClassDef()
+	case lexer.TOKEN_TRY:
+		return p.parseTryStmt()
+	case lexer.TOKEN_RAISE:
+		return p.parseRaiseStmt()
 	}
 
 	// Could be assignment (x: type = expr) or expression statement
@@ -79,6 +85,10 @@ func (p *Parser) parseStatement() (Stmt, error) {
 		}
 		if isAugAssign(p.peekN(1).Type) {
 			return p.parseAugAssignStmt()
+		}
+		// Multi-assign: IDENT COMMA IDENT [...COMMA IDENT] ASSIGN expr
+		if p.peekN(1).Type == lexer.TOKEN_COMMA && p.peekN(2).Type == lexer.TOKEN_IDENT {
+			return p.parseMultiAssignStmt()
 		}
 	}
 
@@ -148,6 +158,38 @@ func isAugAssign(t lexer.TokenType) bool {
 		return true
 	}
 	return false
+}
+
+// parseMultiAssignStmt handles `a, b[, c] = expr` where each LHS is a bare
+// identifier. Requires at least two names; single-name assignments go through
+// parseAssignStmt (with type annotation) or the IdentExpr path in
+// parseStatement (reassignment).
+func (p *Parser) parseMultiAssignStmt() (Stmt, error) {
+	firstTok := p.advance() // first IDENT
+	names := []string{firstTok.Literal}
+	for p.peek().Type == lexer.TOKEN_COMMA {
+		p.advance() // consume comma
+		nameTok := p.peek()
+		if nameTok.Type != lexer.TOKEN_IDENT {
+			return nil, fmt.Errorf("%d:%d: expected identifier in multi-assign, got %s",
+				nameTok.Line, nameTok.Col, nameTok.Type)
+		}
+		p.advance()
+		names = append(names, nameTok.Literal)
+	}
+	if err := p.expect(lexer.TOKEN_ASSIGN); err != nil {
+		return nil, err
+	}
+	value, err := p.parseExpr(0)
+	if err != nil {
+		return nil, err
+	}
+	p.consumeNewline()
+	return &MultiAssignStmt{
+		Pos:   p.makePos(firstTok),
+		Names: names,
+		Value: value,
+	}, nil
 }
 
 func (p *Parser) parseAssignStmt() (Stmt, error) {
@@ -454,6 +496,10 @@ func (p *Parser) parsePrimary() (Expr, error) {
 		p.advance()
 		return &StrLit{Pos: p.makePos(tok), Value: tok.Literal}, nil
 
+	case lexer.TOKEN_BYTES:
+		p.advance()
+		return &BytesLit{Pos: p.makePos(tok), Value: tok.Literal}, nil
+
 	case lexer.TOKEN_TRUE:
 		p.advance()
 		return &BoolLit{Pos: p.makePos(tok), Value: true}, nil
@@ -471,15 +517,40 @@ func (p *Parser) parsePrimary() (Expr, error) {
 		return &IdentExpr{Pos: p.makePos(tok), Name: tok.Literal}, nil
 
 	case lexer.TOKEN_LPAREN:
-		p.advance()
-		expr, err := p.parseExpr(0)
+		lparenTok := p.advance()
+		// Empty tuple: ()
+		if p.peek().Type == lexer.TOKEN_RPAREN {
+			p.advance()
+			return &TupleLit{Pos: p.makePos(lparenTok), Elements: nil}, nil
+		}
+		first, err := p.parseExpr(0)
 		if err != nil {
 			return nil, err
+		}
+		// Not a comma -> parenthesized expression (grouping).
+		if p.peek().Type != lexer.TOKEN_COMMA {
+			if err := p.expect(lexer.TOKEN_RPAREN); err != nil {
+				return nil, err
+			}
+			return first, nil
+		}
+		// Tuple: (x, ...) or (x,)
+		elements := []Expr{first}
+		for p.peek().Type == lexer.TOKEN_COMMA {
+			p.advance() // consume comma
+			if p.peek().Type == lexer.TOKEN_RPAREN {
+				break // trailing comma (also terminates 1-tuple form `(x,)`)
+			}
+			next, err := p.parseExpr(0)
+			if err != nil {
+				return nil, err
+			}
+			elements = append(elements, next)
 		}
 		if err := p.expect(lexer.TOKEN_RPAREN); err != nil {
 			return nil, err
 		}
-		return expr, nil
+		return &TupleLit{Pos: p.makePos(lparenTok), Elements: elements}, nil
 
 	case lexer.TOKEN_LBRACK:
 		return p.parseListLit()
@@ -722,6 +793,21 @@ func (p *Parser) parseFuncDef() (Stmt, error) {
 	if err := p.expect(lexer.TOKEN_COLON); err != nil {
 		return nil, err
 	}
+
+	// Inline stub body: `def foo(...): ...` on a single line. Used for @extern
+	// declarations; also accepted for regular defs (body is empty, no-op).
+	if p.peek().Type == lexer.TOKEN_ELLIPSIS {
+		p.advance()
+		p.consumeNewline()
+		return &FuncDef{
+			Pos:        p.makePos(tok),
+			Name:       nameTok.Literal,
+			Params:     params,
+			ReturnType: retType,
+			Body:       nil,
+		}, nil
+	}
+
 	p.consumeNewline()
 
 	body, err := p.parseBlock()
@@ -736,6 +822,56 @@ func (p *Parser) parseFuncDef() (Stmt, error) {
 		ReturnType: retType,
 		Body:       body,
 	}, nil
+}
+
+// parseDecoratedFuncDef handles a single-decorator function definition:
+//
+//	@extern
+//	def name(...) -> T: ...
+//
+//	@extern("c_symbol")
+//	def name(...) -> T: ...
+//
+// Only `@extern` is recognized; anything else is an error. Only one decorator
+// is permitted per function in v1.
+func (p *Parser) parseDecoratedFuncDef() (Stmt, error) {
+	atTok := p.advance() // consume '@'
+	nameTok := p.peek()
+	if nameTok.Type != lexer.TOKEN_IDENT {
+		return nil, fmt.Errorf("%d:%d: expected decorator name after '@', got %s", nameTok.Line, nameTok.Col, nameTok.Type)
+	}
+	p.advance()
+	if nameTok.Literal != "extern" {
+		return nil, fmt.Errorf("%d:%d: unknown decorator: @%s (only @extern is supported)", atTok.Line, atTok.Col, nameTok.Literal)
+	}
+
+	externSymbol := ""
+	if p.peek().Type == lexer.TOKEN_LPAREN {
+		p.advance() // consume (
+		argTok := p.peek()
+		if argTok.Type != lexer.TOKEN_STRING {
+			return nil, fmt.Errorf("%d:%d: @extern argument must be a string literal, got %s", argTok.Line, argTok.Col, argTok.Type)
+		}
+		p.advance()
+		externSymbol = argTok.Literal
+		if err := p.expect(lexer.TOKEN_RPAREN); err != nil {
+			return nil, err
+		}
+	}
+
+	p.skipNewlines()
+
+	if p.peek().Type != lexer.TOKEN_DEF {
+		return nil, fmt.Errorf("%d:%d: expected 'def' after @extern decorator, got %s", p.peek().Line, p.peek().Col, p.peek().Type)
+	}
+	stmt, err := p.parseFuncDef()
+	if err != nil {
+		return nil, err
+	}
+	fd := stmt.(*FuncDef)
+	fd.Extern = true
+	fd.ExternSymbol = externSymbol
+	return fd, nil
 }
 
 func (p *Parser) parseClassDef() (Stmt, error) {
@@ -803,6 +939,101 @@ func (p *Parser) parseClassDef() (Stmt, error) {
 		Base:    base,
 		Methods: methods,
 	}, nil
+}
+
+func (p *Parser) parseTryStmt() (Stmt, error) {
+	tok := p.advance() // consume 'try'
+	if err := p.expect(lexer.TOKEN_COLON); err != nil {
+		return nil, err
+	}
+	p.consumeNewline()
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+
+	var excepts []ExceptClause
+	sawBare := false
+	for p.peek().Type == lexer.TOKEN_EXCEPT {
+		if sawBare {
+			return nil, fmt.Errorf("%d:%d: no except clauses may follow a bare `except:`",
+				p.peek().Line, p.peek().Col)
+		}
+		excTok := p.advance() // consume 'except'
+		clause := ExceptClause{Pos: p.makePos(excTok)}
+		if p.peek().Type != lexer.TOKEN_COLON {
+			ann, err := p.parseTypeAnnotation()
+			if err != nil {
+				return nil, err
+			}
+			clause.ExcType = ann
+			if p.peek().Type == lexer.TOKEN_AS {
+				p.advance()
+				nameTok := p.peek()
+				if nameTok.Type != lexer.TOKEN_IDENT {
+					return nil, fmt.Errorf("%d:%d: expected identifier after 'as', got %s",
+						nameTok.Line, nameTok.Col, nameTok.Type)
+				}
+				p.advance()
+				clause.VarName = nameTok.Literal
+			}
+		} else {
+			sawBare = true
+		}
+		if err := p.expect(lexer.TOKEN_COLON); err != nil {
+			return nil, err
+		}
+		p.consumeNewline()
+		clauseBody, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		clause.Body = clauseBody
+		excepts = append(excepts, clause)
+	}
+
+	var finallyBody []Stmt
+	hasFinally := false
+	if p.peek().Type == lexer.TOKEN_FINALLY {
+		p.advance()
+		if err := p.expect(lexer.TOKEN_COLON); err != nil {
+			return nil, err
+		}
+		p.consumeNewline()
+		fb, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		finallyBody = fb
+		hasFinally = true
+	}
+
+	if len(excepts) == 0 && !hasFinally {
+		return nil, fmt.Errorf("%d:%d: try without except or finally",
+			tok.Line, tok.Col)
+	}
+
+	return &TryStmt{
+		Pos:         p.makePos(tok),
+		Body:        body,
+		Excepts:     excepts,
+		FinallyBody: finallyBody,
+		HasFinally:  hasFinally,
+	}, nil
+}
+
+func (p *Parser) parseRaiseStmt() (Stmt, error) {
+	tok := p.advance() // consume 'raise'
+	if p.peek().Type == lexer.TOKEN_NEWLINE || p.peek().Type == lexer.TOKEN_EOF || p.peek().Type == lexer.TOKEN_DEDENT {
+		return nil, fmt.Errorf("%d:%d: bare `raise` is not supported in v1; provide an exception instance",
+			tok.Line, tok.Col)
+	}
+	value, err := p.parseExpr(0)
+	if err != nil {
+		return nil, err
+	}
+	p.consumeNewline()
+	return &RaiseStmt{Pos: p.makePos(tok), Value: value}, nil
 }
 
 func (p *Parser) parseReturnStmt() (Stmt, error) {

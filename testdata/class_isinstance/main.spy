@@ -20,7 +20,7 @@ def check(s: Shape) -> None:
     if isinstance(s, Shape):
         print("shape")
 
-c: Circle = Circle()
-s: Square = Square()
+c = Circle()
+s = Square()
 check(c)
 check(s)

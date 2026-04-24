@@ -1,0 +1,23 @@
+from io import open, File
+
+# A path that should not exist. If a previous run somehow created it,
+# the test would silently pass — but /tmp is a tmpfs on most systems
+# and this name is unique enough that collision is implausible.
+missing = "/tmp/spython_definitely_not_a_real_file_xyzzy"
+
+try:
+    f: File = open(missing, "r")
+    print("opened — unexpected")
+    f.close()
+except FileNotFoundError as e:
+    print("not found")
+    print(e.msg)
+
+# OSError is the parent — must also catch FileNotFoundError.
+try:
+    g: File = open(missing, "r")
+    print("opened — unexpected")
+    g.close()
+except OSError as oe:
+    print("os error")
+    print(oe.msg)

@@ -1,0 +1,36 @@
+from struct import pack_u8, pack_u16_le, pack_u16_be, pack_u32_le, pack_u32_be
+from struct import pack_i16_le, pack_i64_le, pack_f64_le
+from struct import unpack_u8, unpack_u16_le, unpack_u16_be, unpack_u32_le, unpack_u32_be
+from struct import unpack_i16_le, unpack_i64_le, unpack_f64_le
+
+ba: bytearray = bytearray(0)
+
+pack_u8(ba, 65)
+pack_u16_le(ba, 4660)
+pack_u16_be(ba, 4660)
+pack_u32_le(ba, 2864434397)
+pack_u32_be(ba, 2864434397)
+
+print(len(ba))  # 1 + 2 + 2 + 4 + 4 = 13
+
+data: bytes = bytes(ba)
+print(unpack_u8(data, 0))       # 65
+print(unpack_u16_le(data, 1))   # 4660
+print(unpack_u16_be(data, 3))   # 4660
+print(unpack_u32_le(data, 5))   # 2864434397
+print(unpack_u32_be(data, 9))   # 2864434397
+
+# Signed round-trip.
+ba2: bytearray = bytearray(0)
+pack_i16_le(ba2, -1)
+pack_i64_le(ba2, -42)
+d2: bytes = bytes(ba2)
+print(unpack_i16_le(d2, 0))  # -1
+print(unpack_i64_le(d2, 2))  # -42
+
+# Float round-trip.
+ba3: bytearray = bytearray(0)
+pack_f64_le(ba3, 3.14159)
+d3: bytes = bytes(ba3)
+x: float = unpack_f64_le(d3, 0)
+print(x)

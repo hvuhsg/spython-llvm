@@ -1,0 +1,9 @@
+def run() -> int:
+    try:
+        print("try")
+        return 42
+    finally:
+        print("finally")
+
+x = run()
+print(x)

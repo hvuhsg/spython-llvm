@@ -1,0 +1,25 @@
+data = b"hello"
+print(len(data))
+print(data[0])
+print(data[4])
+
+empty = b""
+print(len(empty))
+
+escaped = b"\x00\x01\xff"
+print(len(escaped))
+print(escaped[0])
+print(escaped[1])
+print(escaped[2])
+
+# bytes/str share the runtime layout, so conversions are identity.
+s = "ABC"
+b = bytes(s)
+print(len(b))
+print(b[0])
+print(b[1])
+print(b[2])
+
+# bytes() from bytes is a no-op.
+b2 = bytes(data)
+print(b2[4])

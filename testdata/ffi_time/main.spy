@@ -1,0 +1,10 @@
+import time
+
+t0 = time.monotonic()
+time.sleep(0.02)
+t1 = time.monotonic()
+
+# Delta must be >= ~0.02s. Allow slack on both sides to absorb scheduler jitter.
+delta: float = t1 - t0
+print(delta >= 0.01)
+print(delta < 2.0)

@@ -27,6 +27,16 @@ type StrType struct{}
 func (t *StrType) String() string    { return "str" }
 func (t *StrType) Equals(o Type) bool { _, ok := o.(*StrType); return ok }
 
+type BytesType struct{}
+
+func (t *BytesType) String() string    { return "bytes" }
+func (t *BytesType) Equals(o Type) bool { _, ok := o.(*BytesType); return ok }
+
+type BytearrayType struct{}
+
+func (t *BytearrayType) String() string    { return "bytearray" }
+func (t *BytearrayType) Equals(o Type) bool { _, ok := o.(*BytearrayType); return ok }
+
 type NoneType struct{}
 
 func (t *NoneType) String() string    { return "None" }
@@ -43,6 +53,37 @@ func (t *ListType) Equals(o Type) bool {
 		return false
 	}
 	return t.Elem.Equals(ot.Elem)
+}
+
+type TupleType struct {
+	Elements []Type
+}
+
+func (t *TupleType) String() string {
+	s := "tuple["
+	for i, e := range t.Elements {
+		if i > 0 {
+			s += ", "
+		}
+		s += e.String()
+	}
+	return s + "]"
+}
+
+func (t *TupleType) Equals(o Type) bool {
+	ot, ok := o.(*TupleType)
+	if !ok {
+		return false
+	}
+	if len(t.Elements) != len(ot.Elements) {
+		return false
+	}
+	for i := range t.Elements {
+		if !t.Elements[i].Equals(ot.Elements[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 type MapType struct {
@@ -66,6 +107,10 @@ type FuncType struct {
 	Params    []Type
 	Return    Type
 	DefinedIn string // module ID where this function is defined; "" for anonymous/method types
+	// ExternSymbol, when non-empty, overrides the default call-site mangling.
+	// Set by @extern("name") declarations; code generation uses this literal
+	// C symbol instead of spy_<module>_<name>.
+	ExternSymbol string
 }
 
 func (t *FuncType) String() string {

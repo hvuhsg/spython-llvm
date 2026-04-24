@@ -13,7 +13,7 @@ class Circle(Shape):
     def area(self) -> float:
         return 3.14 * self.radius * self.radius
 
-c: Circle = Circle(2.0)
+c = Circle(2.0)
 print(c.name)
 print(c.radius)
 print(c.area())

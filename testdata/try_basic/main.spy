@@ -1,0 +1,11 @@
+class AppError(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+try:
+    e = AppError("boom")
+    raise e
+except AppError as ex:
+    print("caught")
+    print(ex.msg)
+print("after")

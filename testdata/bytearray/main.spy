@@ -1,0 +1,39 @@
+ba = bytearray(5)
+print(len(ba))
+print(ba[0])
+
+# Mutate
+ba[0] = 72
+ba[1] = 101
+ba[2] = 108
+ba[3] = 108
+ba[4] = 111
+print(ba[0])
+print(ba[4])
+
+# Snapshot as bytes
+snap = bytes(ba)
+print(len(snap))
+print(snap[0])
+print(snap[4])
+
+# Mutating ba after snapshot does not affect snap (defensive copy).
+ba[0] = 0
+print(ba[0])
+print(snap[0])
+
+# Construct from bytes literal
+ba2 = bytearray(b"abc")
+print(len(ba2))
+print(ba2[0])
+print(ba2[1])
+print(ba2[2])
+
+# Append
+ba2.append(100)
+print(len(ba2))
+print(ba2[3])
+
+# Value is truncated to 8 bits.
+ba2.append(257)
+print(ba2[4])

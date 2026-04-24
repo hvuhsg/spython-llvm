@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <setjmp.h>
 #include <gc.h>
 #include "runtime.h"
 
@@ -9,6 +10,74 @@
 
 void spy_init(void) {
     GC_INIT();
+}
+
+// Process argv stash for sys.argv. Codegen injects a call to spy_argv_set at
+// the top of main() so any later user of sys.argv sees the values.
+static int     spy_argc_val = 0;
+static char  **spy_argv_val = NULL;
+
+void spy_argv_set(int argc, char **argv) {
+    spy_argc_val = argc;
+    spy_argv_val = argv;
+}
+
+int spy_argv_count(void) { return spy_argc_val; }
+const char *spy_argv_at(int i) {
+    if (i < 0 || i >= spy_argc_val || spy_argv_val == NULL) return "";
+    return spy_argv_val[i];
+}
+
+// ==================== Exception handling ====================
+// Single-threaded model. If we ever add threads, move these to _Thread_local
+// and call GC_add_roots per-thread for the in-flight pointer.
+
+_Static_assert(sizeof(SpyExcFrame) <= 256,
+    "SpyExcFrame must fit in the 256-byte alloca codegen emits per try");
+
+static SpyExcFrame *spy_exc_top = NULL;
+static void        *spy_exc_inflight = NULL;
+static int          spy_exc_roots_registered = 0;
+
+static void spy_exc_register_root(void) {
+    if (!spy_exc_roots_registered) {
+        GC_add_roots(&spy_exc_inflight, (char*)(&spy_exc_inflight) + sizeof(spy_exc_inflight));
+        spy_exc_roots_registered = 1;
+    }
+}
+
+void spy_exc_push(void *frame) {
+    spy_exc_register_root();
+    SpyExcFrame *f = (SpyExcFrame *)frame;
+    f->prev = spy_exc_top;
+    spy_exc_top = f;
+    // buf is populated by the caller's setjmp after this returns.
+}
+
+void spy_exc_pop(void) {
+    if (spy_exc_top) {
+        spy_exc_top = spy_exc_top->prev;
+    }
+}
+
+void *spy_exc_current(void) { return spy_exc_inflight; }
+void  spy_exc_clear(void)   { spy_exc_inflight = NULL; }
+
+void spy_exc_throw(void *obj) {
+    spy_exc_inflight = obj;
+    if (!spy_exc_top) {
+        fprintf(stderr, "Uncaught exception\n");
+        abort();
+    }
+    longjmp(spy_exc_top->buf, 1);
+}
+
+void spy_exc_rethrow(void) {
+    if (!spy_exc_top) {
+        fprintf(stderr, "Uncaught exception\n");
+        abort();
+    }
+    longjmp(spy_exc_top->buf, 1);
 }
 
 // ==================== Print ====================
@@ -330,6 +399,76 @@ char* spy_instance_new(int64_t size) {
         exit(1);
     }
     return (char*)p;
+}
+
+// ==================== Bytearray ====================
+// A bytearray is a SpyList specialized to elem_size=1. The language-level
+// operations (get/set/append) treat each slot as an unsigned byte, returned
+// as int (zero-extended) at the language level.
+
+char* spy_bytearray_new(int64_t len) {
+    char *ba = spy_list_new(1);
+    SpyList *list = (SpyList*)ba;
+    // Ensure capacity and zero the first `len` bytes so indexing is defined
+    // immediately after construction.
+    if (len > list->cap) {
+        list->cap = len;
+        list->data = GC_REALLOC(list->data, list->cap);
+    }
+    for (int64_t i = 0; i < len; i++) list->data[i] = 0;
+    list->len = len;
+    return ba;
+}
+
+// Initialize a bytearray from an existing length-prefixed bytes/str buffer.
+char* spy_bytearray_from_bytes(const char *src) {
+    int64_t src_len = *(int64_t*)src;
+    const char *src_data = src + sizeof(int64_t);
+    char *ba = spy_bytearray_new(src_len);
+    SpyList *list = (SpyList*)ba;
+    memcpy(list->data, src_data, (size_t)src_len);
+    return ba;
+}
+
+int64_t spy_bytearray_get(const char *ba_ptr, int64_t idx) {
+    SpyList *list = (SpyList*)ba_ptr;
+    if (idx < 0 || idx >= list->len) {
+        fprintf(stderr, "bytearray index out of range: %lld (length %lld)\n",
+                (long long)idx, (long long)list->len);
+        exit(1);
+    }
+    return (int64_t)(unsigned char)list->data[idx];
+}
+
+void spy_bytearray_set(char *ba_ptr, int64_t idx, int64_t val) {
+    SpyList *list = (SpyList*)ba_ptr;
+    if (idx < 0 || idx >= list->len) {
+        fprintf(stderr, "bytearray index out of range: %lld (length %lld)\n",
+                (long long)idx, (long long)list->len);
+        exit(1);
+    }
+    list->data[idx] = (char)(val & 0xff);
+}
+
+void spy_bytearray_append(char *ba_ptr, int64_t val) {
+    SpyList *list = (SpyList*)ba_ptr;
+    if (list->len >= list->cap) {
+        list->cap = list->cap ? list->cap * 2 : 8;
+        list->data = GC_REALLOC(list->data, list->cap);
+    }
+    list->data[list->len++] = (char)(val & 0xff);
+}
+
+// Copy a bytearray into a fresh immutable bytes value (same runtime layout as
+// str: [int64_t len][data...]).
+char* spy_bytearray_to_bytes(const char *ba_ptr) {
+    SpyList *list = (SpyList*)ba_ptr;
+    return spy_str_new(list->data, list->len);
+}
+
+int64_t spy_bytearray_len(const char *ba_ptr) {
+    SpyList *list = (SpyList*)ba_ptr;
+    return list->len;
 }
 
 // ==================== Math ====================

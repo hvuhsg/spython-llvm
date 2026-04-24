@@ -1,0 +1,24 @@
+# An imported module that defines:
+#   - a class whose method raises a builtin exception (ValueError)
+#   - a custom exception subclass and a method that raises it
+#
+# Both rely on the exception hierarchy being injected into every module's
+# checker, not just the entry module's.
+
+class BoxError(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+class Box:
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.count = 0
+
+    def add(self, n: int) -> None:
+        if n < 0:
+            v = ValueError("negative add")
+            raise v
+        if self.count + n > self.capacity:
+            b = BoxError("overflow")
+            raise b
+        self.count = self.count + n

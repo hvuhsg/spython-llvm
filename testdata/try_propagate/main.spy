@@ -1,0 +1,16 @@
+class Err(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+def inner() -> None:
+    e = Err("deep")
+    raise e
+
+def middle() -> None:
+    inner()
+
+try:
+    middle()
+except Err as ex:
+    print("caught at top")
+    print(ex.msg)

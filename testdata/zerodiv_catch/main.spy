@@ -1,0 +1,12 @@
+def safe_div(a: int, b: int) -> int:
+    try:
+        return a // b
+    except ZeroDivisionError as e:
+        print("caught:")
+        print(e.msg)
+        return -1
+
+x = safe_div(10, 2)
+print(x)
+y = safe_div(10, 0)
+print(y)

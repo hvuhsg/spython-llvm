@@ -1,4 +1,4 @@
-x: int = 10
+x = 10
 if x > 15:
     print(1)
 elif x > 5:

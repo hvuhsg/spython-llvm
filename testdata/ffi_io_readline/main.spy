@@ -1,0 +1,16 @@
+from io import open, File
+
+path = "/tmp/spython_io_readline.txt"
+
+w: File = open(path, "w")
+w.write("alpha\nbeta\ngamma\n")
+w.close()
+
+r: File = open(path, "r")
+print(r.readline())
+print(r.readline())
+print(r.readline())
+# At EOF — empty.
+last = r.readline()
+print(len(last))
+r.close()

@@ -1,0 +1,10 @@
+# stdlib/time.spy — bindings to stdlib/time.c.
+
+@extern
+def time() -> float: ...
+
+@extern
+def monotonic() -> float: ...
+
+@extern
+def sleep(seconds: float) -> None: ...

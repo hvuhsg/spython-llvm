@@ -1,0 +1,15 @@
+import hashlib
+
+print(hashlib.md5(b""))
+print(hashlib.md5(b"abc"))
+print(hashlib.md5(b"The quick brown fox jumps over the lazy dog"))
+
+print(hashlib.sha1(b""))
+print(hashlib.sha1(b"abc"))
+
+print(hashlib.sha256(b""))
+print(hashlib.sha256(b"abc"))
+print(hashlib.sha256(b"The quick brown fox jumps over the lazy dog"))
+
+# Binary input — bytes with null and high bits. Known SHA-256 of \x00\x01\x02\x03.
+print(hashlib.sha256(b"\x00\x01\x02\x03"))

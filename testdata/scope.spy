@@ -1,12 +1,12 @@
-x: int = 10
+x = 10
 
 def modify() -> None:
-    x: int = 20
+    x = 20
     print(x)
 
 modify()
 print(x)
 
 if True:
-    y: int = 42
+    y = 42
     print(y)

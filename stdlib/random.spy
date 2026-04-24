@@ -1,0 +1,18 @@
+# stdlib/random.spy — pseudo-random number generation backed by xoshiro256**.
+# The state is seeded lazily from the wall clock on first use if seed() has
+# not been called explicitly.
+
+@extern
+def seed(s: int) -> None: ...
+
+@extern
+def random() -> float: ...
+
+@extern
+def randint(a: int, b: int) -> int: ...
+
+@extern
+def uniform(a: float, b: float) -> float: ...
+
+@extern
+def getrandbits(n: int) -> int: ...

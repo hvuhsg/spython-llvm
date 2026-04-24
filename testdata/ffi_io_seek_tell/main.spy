@@ -1,0 +1,23 @@
+from io import open, File
+
+path = "/tmp/spython_io_seek_tell.txt"
+
+w: File = open(path, "w")
+w.write("0123456789")
+w.close()
+
+r: File = open(path, "r")
+print(r.tell())            # 0
+chunk = r.read_n(4)
+print(chunk)               # "0123"
+print(r.tell())            # 4
+
+# Seek to absolute offset 7 (whence=0).
+r.seek(7, 0)
+print(r.tell())            # 7
+print(r.read_n(2))         # "78"
+
+# Seek to end (whence=2, offset 0) → length is 10.
+r.seek(0, 2)
+print(r.tell())            # 10
+r.close()

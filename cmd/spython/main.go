@@ -122,8 +122,22 @@ func build(file, output string) error {
 	// Find runtime.c
 	runtimePath := findRuntime()
 
+	// Collect C-backed stdlib modules and their link-directive flags.
+	var cFiles []string
+	var linkFlags []string
+	for _, m := range res.Modules {
+		if m.CFile != "" {
+			cFiles = append(cFiles, m.CFile)
+			linkFlags = append(linkFlags, m.LinkFlags...)
+		}
+	}
+	linkFlags = loader.DedupeFlags(linkFlags)
+
 	// Compile with clang
 	args := []string{"-O2", "-o", output, tmpIR.Name(), runtimePath}
+	args = append(args, cFiles...)
+	runtimeDir := filepath.Dir(runtimePath)
+	args = append(args, "-I"+runtimeDir)
 	if runtime.GOOS == "darwin" {
 		args = append(args, "-Wno-override-module")
 		for _, prefix := range []string{"/opt/homebrew/opt/bdw-gc", "/usr/local/opt/bdw-gc"} {
@@ -134,6 +148,7 @@ func build(file, output string) error {
 		}
 	}
 	args = append(args, "-lgc")
+	args = append(args, linkFlags...)
 
 	clangCmd := exec.Command("clang", args...)
 	clangCmd.Stderr = os.Stderr

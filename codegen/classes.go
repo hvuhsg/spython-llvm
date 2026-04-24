@@ -500,7 +500,27 @@ func (g *Generator) emitIsInstance(objVal string, objClass *types.ClassType, tar
 		vtabSlotPtr, objClass.Name, objClass.Name, objVal))
 	startVtab := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = load i8*, i8** %s", startVtab, vtabSlotPtr))
+	return g.emitIsInstanceVtabWalk(startVtab, target.ClassID)
+}
 
+// emitIsInstanceRaw performs the same class-id walk as emitIsInstance but
+// starts from a raw `i8*` object pointer whose concrete class is not known at
+// the call site. Every Class.<Name> struct starts with an `i8*` vtable slot at
+// offset 0, so we can read it through a generic `{i8*}*` view. Used by
+// exception dispatch (the raised object is `i8*` from spy_exc_current()).
+func (g *Generator) emitIsInstanceRaw(rawObj string, targetClassID int) string {
+	genObj := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to { i8* }*", genObj, rawObj))
+	vtabSlotPtr := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = getelementptr { i8* }, { i8* }* %s, i32 0, i32 0", vtabSlotPtr, genObj))
+	startVtab := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i8*, i8** %s", startVtab, vtabSlotPtr))
+	return g.emitIsInstanceVtabWalk(startVtab, targetClassID)
+}
+
+// emitIsInstanceVtabWalk walks the {class_id, base_vtable_ptr} chain starting
+// at `startVtab` (an i8* vtable pointer), returning an i1 SSA name.
+func (g *Generator) emitIsInstanceVtabWalk(startVtab string, targetClassID int) string {
 	// Alloca for current vtable pointer and result.
 	curAlloca := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = alloca i8*", curAlloca))
@@ -533,7 +553,7 @@ func (g *Generator) emitIsInstance(objVal string, objClass *types.ClassType, tar
 	idVal := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = load i32, i32* %s", idVal, idPtr))
 	cmp := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = icmp eq i32 %s, %d", cmp, idVal, target.ClassID))
+	g.emitLine(fmt.Sprintf("  %s = icmp eq i32 %s, %d", cmp, idVal, targetClassID))
 	foundLabel := g.newLabel("isinstance.found")
 	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", cmp, foundLabel, nextLabel))
 

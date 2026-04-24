@@ -1,0 +1,33 @@
+# stdlib/sys.spy — process-level primitives: argv, exit, platform, stderr.
+#
+# argv() returns the same list CPython exposes as sys.argv: argv[0] is the
+# program name, argv[1:] are the user-supplied arguments.
+
+@extern
+def _argc() -> int: ...
+
+@extern
+def _argv_at(i: int) -> str: ...
+
+@extern
+def exit(code: int) -> None: ...
+
+@extern
+def platform() -> str: ...
+
+# Write directly to stdout/stderr without an implicit newline. Useful when
+# building formatted output where `print`'s newline behavior gets in the way.
+@extern
+def stdout_write(s: str) -> None: ...
+
+@extern
+def stderr_write(s: str) -> None: ...
+
+def argv() -> list[str]:
+    n: int = _argc()
+    out: list[str] = []
+    i: int = 0
+    while i < n:
+        out.append(_argv_at(i))
+        i = i + 1
+    return out

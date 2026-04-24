@@ -71,6 +71,22 @@ func (l *Lexer) Tokens() ([]Token, error) {
 			continue
 		}
 
+		// Bytes literal: b"..." or b'...'. Must be checked before readIdentifier
+		// since `b` is otherwise a valid identifier.
+		if ch == 'b' && l.current+1 < len(l.source) {
+			next := l.source[l.current+1]
+			if next == '"' || next == '\'' {
+				l.advance() // consume 'b'
+				tok, err := l.readString(next)
+				if err != nil {
+					return nil, err
+				}
+				tok.Type = TOKEN_BYTES
+				l.tokens = append(l.tokens, tok)
+				continue
+			}
+		}
+
 		// Identifiers and keywords
 		if unicode.IsLetter(rune(ch)) || ch == '_' {
 			l.readIdentifier()
@@ -149,11 +165,33 @@ func (l *Lexer) readString(quote byte) (Token, error) {
 			if l.isAtEnd() {
 				return Token{}, fmt.Errorf("%d:%d: unterminated string escape", startLine, startCol)
 			}
+			if l.peek() == 'x' {
+				// \xHH hex escape: two hex digits after the 'x'.
+				if l.current+2 >= len(l.source) {
+					return Token{}, fmt.Errorf("%d:%d: \\x escape requires two hex digits", startLine, startCol)
+				}
+				h1 := l.source[l.current+1]
+				h2 := l.source[l.current+2]
+				v1, ok1 := hexNibble(h1)
+				v2, ok2 := hexNibble(h2)
+				if !ok1 || !ok2 {
+					return Token{}, fmt.Errorf("%d:%d: invalid hex digits in \\x escape", startLine, startCol)
+				}
+				result += string([]byte{byte(v1<<4 | v2)})
+				l.advance() // 'x'
+				l.advance() // h1
+				l.advance() // h2
+				continue
+			}
 			switch l.peek() {
 			case 'n':
 				result += "\n"
 			case 't':
 				result += "\t"
+			case 'r':
+				result += "\r"
+			case '0':
+				result += "\x00"
 			case '\\':
 				result += "\\"
 			case '\'':
@@ -233,6 +271,10 @@ func (l *Lexer) readOperator() error {
 		case ">>=":
 			l.advance(); l.advance(); l.advance()
 			l.tokens = append(l.tokens, Token{Type: TOKEN_RSHIFTEQ, Literal: ">>=", Line: l.line, Col: startCol})
+			return nil
+		case "...":
+			l.advance(); l.advance(); l.advance()
+			l.tokens = append(l.tokens, Token{Type: TOKEN_ELLIPSIS, Literal: "...", Line: l.line, Col: startCol})
 			return nil
 		}
 	}
@@ -357,6 +399,8 @@ func (l *Lexer) readOperator() error {
 		l.addTokenAt(TOKEN_COMMA, ",", startCol)
 	case '.':
 		l.addTokenAt(TOKEN_DOT, ".", startCol)
+	case '@':
+		l.addTokenAt(TOKEN_AT, "@", startCol)
 	default:
 		return fmt.Errorf("%d:%d: unexpected character: %c", l.line, startCol, ch)
 	}
@@ -365,6 +409,19 @@ func (l *Lexer) readOperator() error {
 
 func (l *Lexer) isAtEnd() bool {
 	return l.current >= len(l.source)
+}
+
+// hexNibble converts a single hex digit character to its numeric value.
+func hexNibble(c byte) (int, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0'), true
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10, true
+	case c >= 'A' && c <= 'F':
+		return int(c-'A') + 10, true
+	}
+	return 0, false
 }
 
 func (l *Lexer) peek() byte {

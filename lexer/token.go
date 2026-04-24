@@ -13,6 +13,7 @@ const (
 	TOKEN_INT
 	TOKEN_FLOAT
 	TOKEN_STRING
+	TOKEN_BYTES
 	TOKEN_IDENT
 
 	// Keywords
@@ -37,6 +38,10 @@ const (
 	TOKEN_FROM
 	TOKEN_AS
 	TOKEN_CLASS
+	TOKEN_TRY
+	TOKEN_EXCEPT
+	TOKEN_FINALLY
+	TOKEN_RAISE
 
 	// Operators
 	TOKEN_PLUS     // +
@@ -79,10 +84,12 @@ const (
 	TOKEN_RBRACK // ]
 	TOKEN_LBRACE // {
 	TOKEN_RBRACE // }
-	TOKEN_COLON  // :
-	TOKEN_COMMA  // ,
-	TOKEN_DOT    // .
-	TOKEN_ARROW  // ->
+	TOKEN_COLON    // :
+	TOKEN_COMMA    // ,
+	TOKEN_DOT      // .
+	TOKEN_ARROW    // ->
+	TOKEN_AT       // @
+	TOKEN_ELLIPSIS // ...
 )
 
 var tokenNames = map[TokenType]string{
@@ -93,6 +100,7 @@ var tokenNames = map[TokenType]string{
 	TOKEN_INT:      "INT",
 	TOKEN_FLOAT:    "FLOAT",
 	TOKEN_STRING:   "STRING",
+	TOKEN_BYTES:    "BYTES",
 	TOKEN_IDENT:    "IDENT",
 	TOKEN_IF:       "if",
 	TOKEN_ELIF:     "elif",
@@ -115,6 +123,10 @@ var tokenNames = map[TokenType]string{
 	TOKEN_FROM:     "from",
 	TOKEN_AS:       "as",
 	TOKEN_CLASS:    "class",
+	TOKEN_TRY:      "try",
+	TOKEN_EXCEPT:   "except",
+	TOKEN_FINALLY:  "finally",
+	TOKEN_RAISE:    "raise",
 	TOKEN_PLUS:     "+",
 	TOKEN_MINUS:    "-",
 	TOKEN_STAR:     "*",
@@ -157,6 +169,8 @@ var tokenNames = map[TokenType]string{
 	TOKEN_COMMA:    ",",
 	TOKEN_DOT:      ".",
 	TOKEN_ARROW:    "->",
+	TOKEN_AT:       "@",
+	TOKEN_ELLIPSIS: "...",
 }
 
 func (t TokenType) String() string {
@@ -188,6 +202,10 @@ var keywords = map[string]TokenType{
 	"from":     TOKEN_FROM,
 	"as":       TOKEN_AS,
 	"class":    TOKEN_CLASS,
+	"try":      TOKEN_TRY,
+	"except":   TOKEN_EXCEPT,
+	"finally":  TOKEN_FINALLY,
+	"raise":    TOKEN_RAISE,
 }
 
 func LookupKeyword(ident string) TokenType {

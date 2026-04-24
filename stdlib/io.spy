@@ -1,0 +1,99 @@
+# stdlib/io.spy — Python-style file I/O. Backed by stdlib/io.c, which speaks
+# POSIX. The compile-time spython type system distinguishes str and bytes,
+# but the runtime layout is identical, so the same primitives serve both.
+#
+# Usage:
+#   from io import open
+#   f = open("path", "r")
+#   data: str = f.read()
+#   f.close()
+#
+# spython has no `with` statement yet, so callers are responsible for
+# pairing open/close (typically via try/finally).
+
+@extern
+def _open_fd(path: str, mode: str) -> int: ...
+
+@extern
+def _close_fd(fd: int) -> None: ...
+
+@extern
+def _read_all_fd(fd: int) -> str: ...
+
+@extern
+def _read_n_fd(fd: int, n: int) -> str: ...
+
+@extern
+def _readline_fd(fd: int) -> str: ...
+
+@extern
+def _write_fd(fd: int, data: str) -> int: ...
+
+@extern
+def _tell_fd(fd: int) -> int: ...
+
+@extern
+def _seek_fd(fd: int, offset: int, whence: int) -> int: ...
+
+# Returns: 0 ok, 1 ENOENT, 2 EACCES, 3 EISDIR, 4 other.
+@extern
+def _last_error_class() -> int: ...
+
+# Map _last_error_class() onto the appropriate exception subclass and raise.
+# Centralizes the per-errno dispatch so every primitive doesn't repeat it.
+def _raise_io_error(path: str) -> None:
+    cls: int = _last_error_class()
+    if cls == 1:
+        e1: FileNotFoundError = FileNotFoundError(path)
+        raise e1
+    if cls == 2:
+        e2: PermissionError = PermissionError(path)
+        raise e2
+    if cls == 3:
+        e3: IsADirectoryError = IsADirectoryError(path)
+        raise e3
+    e: OSError = OSError(path)
+    raise e
+
+class File:
+    def __init__(self, path: str, mode: str):
+        self.path = path
+        self.mode = mode
+        self.fd = _open_fd(path, mode)
+        if self.fd < 0:
+            _raise_io_error(path)
+
+    # Read from current position to EOF.
+    def read(self) -> str:
+        return _read_all_fd(self.fd)
+
+    # Read up to n bytes. n < 0 reads to EOF (mirrors Python's f.read(-1)).
+    # Named read_n because spython has no overloading or default arguments.
+    def read_n(self, n: int) -> str:
+        return _read_n_fd(self.fd, n)
+
+    # Read up to and including the next newline; returns "" at EOF.
+    def readline(self) -> str:
+        return _readline_fd(self.fd)
+
+    # Write the entire payload; raises OSError on partial-write failure.
+    def write(self, data: str) -> int:
+        n: int = _write_fd(self.fd, data)
+        if n < 0:
+            _raise_io_error(self.path)
+        return n
+
+    def close(self) -> None:
+        _close_fd(self.fd)
+
+    def tell(self) -> int:
+        return _tell_fd(self.fd)
+
+    # whence: 0=start, 1=current, 2=end (matches Python's os module).
+    def seek(self, offset: int, whence: int) -> int:
+        return _seek_fd(self.fd, offset, whence)
+
+# Factory matching Python's builtin open(). Returns a File or raises an
+# OSError subclass on failure.
+def open(path: str, mode: str) -> File:
+    return File(path, mode)

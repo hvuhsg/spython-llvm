@@ -1,0 +1,11 @@
+# stdlib/hashlib.spy — cryptographic hash functions. Each call hashes the
+# input bytes and returns the digest as lowercase hexadecimal text.
+
+@extern
+def md5(data: bytes) -> str: ...
+
+@extern
+def sha1(data: bytes) -> str: ...
+
+@extern
+def sha256(data: bytes) -> str: ...

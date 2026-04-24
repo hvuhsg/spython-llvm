@@ -1,0 +1,67 @@
+# stdlib/math.spy — bindings to stdlib/math.c (thin wrappers over <math.h>).
+# All functions are single-argument double->double unless noted; the C
+# implementation lives in math.c and is linked via the `// spython-link: -lm`
+# directive there.
+
+@extern
+def sqrt(x: float) -> float: ...
+
+@extern
+def sin(x: float) -> float: ...
+
+@extern
+def cos(x: float) -> float: ...
+
+@extern
+def tan(x: float) -> float: ...
+
+@extern
+def asin(x: float) -> float: ...
+
+@extern
+def acos(x: float) -> float: ...
+
+@extern
+def atan(x: float) -> float: ...
+
+@extern
+def atan2(y: float, x: float) -> float: ...
+
+@extern
+def log(x: float) -> float: ...
+
+@extern
+def log2(x: float) -> float: ...
+
+@extern
+def log10(x: float) -> float: ...
+
+@extern
+def exp(x: float) -> float: ...
+
+@extern
+def pow(base: float, exponent: float) -> float: ...
+
+@extern
+def floor(x: float) -> float: ...
+
+@extern
+def ceil(x: float) -> float: ...
+
+@extern
+def fabs(x: float) -> float: ...
+
+@extern
+def fmod(x: float, y: float) -> float: ...
+
+# Constants. inf/nan are produced by helper externs because spython has no
+# literal syntax for them.
+@extern
+def _inf() -> float: ...
+
+@extern
+def _nan() -> float: ...
+
+pi: float = 3.141592653589793
+e: float = 2.718281828459045
+tau: float = 6.283185307179586

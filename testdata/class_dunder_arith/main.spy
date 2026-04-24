@@ -12,14 +12,14 @@ class Vec2:
     def __neg__(self) -> Vec2:
         return Vec2(-self.x, -self.y)
 
-a: Vec2 = Vec2(1, 2)
-b: Vec2 = Vec2(3, 5)
-c: Vec2 = a + b
+a = Vec2(1, 2)
+b = Vec2(3, 5)
+c = a + b
 print(c.x)
 print(c.y)
-d: Vec2 = a - b
+d = a - b
 print(d.x)
 print(d.y)
-e: Vec2 = -a
+e = -a
 print(e.x)
 print(e.y)

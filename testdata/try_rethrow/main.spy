@@ -1,0 +1,17 @@
+class A(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+class B(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+try:
+    try:
+        b = B("bee")
+        raise b
+    except A as ea:
+        print("should not catch A")
+except B as eb:
+    print("outer caught")
+    print(eb.msg)

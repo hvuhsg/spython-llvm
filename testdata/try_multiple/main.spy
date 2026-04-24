@@ -1,0 +1,27 @@
+class ErrA(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+class ErrB(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+def go(flag: int) -> None:
+    try:
+        if flag == 1:
+            a = ErrA("A!")
+            raise a
+        if flag == 2:
+            b = ErrB("B!")
+            raise b
+        print("no raise")
+    except ErrA as ea:
+        print("A")
+        print(ea.msg)
+    except ErrB as eb:
+        print("B")
+        print(eb.msg)
+
+go(0)
+go(1)
+go(2)

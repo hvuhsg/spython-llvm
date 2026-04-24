@@ -1,0 +1,18 @@
+try:
+    x = 10 // 0
+except ArithmeticError as e:
+    print("arithmetic:")
+    print(e.msg)
+
+try:
+    y = 10 // 0
+except Exception as e:
+    print("exception:")
+    print(e.msg)
+
+try:
+    v = ValueError("bad value")
+    raise v
+except Exception as e:
+    print("got:")
+    print(e.msg)

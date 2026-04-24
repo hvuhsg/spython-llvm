@@ -1,0 +1,10 @@
+# stdlib/binascii.spy — hex encoding/decoding and CRC-32.
+
+@extern
+def hexlify(s: str) -> str: ...
+
+@extern
+def unhexlify(s: str) -> str: ...
+
+@extern
+def crc32(s: str) -> int: ...

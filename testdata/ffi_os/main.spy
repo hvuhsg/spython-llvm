@@ -1,0 +1,39 @@
+import os
+
+# getpid is always a positive int.
+pid: int = os.getpid()
+print(pid > 0)
+
+# getenv of a guaranteed-set var. PATH is set on any POSIX shell.
+path: str = os.getenv("PATH")
+print(len(path) > 0)
+
+# getenv of an intentionally-unset var returns empty string.
+missing: str = os.getenv("SPYTHON_TEST_DEFINITELY_UNSET_VAR_XYZ")
+print(len(missing))
+
+# Round-trip a directory create / listdir / remove dance.
+base: str = "/tmp/spython_os_test_dir"
+
+# Clean up any leftover from a prior failing run.
+mode: int = os._stat_mode(base)
+if mode >= 0:
+    leftover: list[str] = os.listdir(base)
+    i: int = 0
+    while i < len(leftover):
+        os.remove(base + "/" + leftover[i])
+        i = i + 1
+    os.rmdir(base)
+
+os.mkdir(base)
+
+# mkdir worked: stat now returns a valid mode.
+print(os._stat_mode(base) >= 0)
+
+# listdir on an empty dir is an empty list.
+names: list[str] = os.listdir(base)
+print(len(names))
+
+# Cleanup.
+os.rmdir(base)
+print(os._stat_mode(base))  # -1 (ENOENT after removal)

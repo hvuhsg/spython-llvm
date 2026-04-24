@@ -1,6 +1,6 @@
-greeting: str = "hello"
-name: str = "world"
-msg: str = greeting + " " + name
+greeting = "hello"
+name = "world"
+msg = greeting + " " + name
 print(msg)
 print(len(msg))
 print(greeting == "hello")

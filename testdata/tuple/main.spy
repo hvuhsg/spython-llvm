@@ -1,0 +1,44 @@
+def divmod2(n: int, d: int) -> tuple[int, int]:
+    return (n // d, n % d)
+
+# Basic literal, typed annotation, index access.
+t: tuple[int, str] = (42, "hi")
+print(t[0])
+print(t[1])
+
+# Float + float.
+p: tuple[float, float] = (1.5, 2.5)
+print(p[0])
+print(p[1])
+
+# Heterogeneous arity-3.
+u: tuple[int, str, float] = (1, "two", 3.14)
+print(u[0])
+print(u[1])
+print(u[2])
+
+# Unpacking a literal.
+a, b = (10, 20)
+print(a)
+print(b)
+
+# Unpacking an existing tuple variable.
+x, y = p
+print(x)
+print(y)
+
+# Tuple return from a function, then unpack.
+q, r = divmod2(17, 5)
+print(q)
+print(r)
+
+# Three-way unpack.
+i, s, f = u
+print(i)
+print(s)
+print(f)
+
+# Reassignment via multi-assign keeps the same storage.
+a, b = (99, 100)
+print(a)
+print(b)

@@ -1,0 +1,10 @@
+i = 0
+while i < 5:
+    try:
+        print(i)
+        if i == 2:
+            break
+    finally:
+        print("fin")
+    i = i + 1
+print("done")

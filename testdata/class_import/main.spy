@@ -1,0 +1,18 @@
+import shapes
+from shapes import Circle, Box
+
+# from-imported class used directly as a value
+c = Circle(2.0)
+print(c.area())
+
+# module-attr constructor
+c2 = shapes.Circle(3.0)
+print(c2.area())
+
+# from-imported class used as a type annotation
+b = Box(2.0, 5.0)
+print(b.area())
+
+# module-attr again
+b2 = shapes.Box(4.0, 0.5)
+print(b2.area())

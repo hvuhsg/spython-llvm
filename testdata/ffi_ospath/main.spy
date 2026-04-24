@@ -1,0 +1,49 @@
+import ospath
+
+# join
+print(ospath.join("/a/b", "c"))        # /a/b/c
+print(ospath.join("/a/b/", "c"))       # /a/b/c
+print(ospath.join("/a/b", "/c"))       # /c    (absolute wins)
+print(ospath.join("", "c"))            # c
+
+# split
+h1: tuple[str, str] = ospath.split("/a/b/c.txt")
+print(h1[0])  # /a/b
+print(h1[1])  # c.txt
+
+h2: tuple[str, str] = ospath.split("/foo")
+print(h2[0])  # /
+print(h2[1])  # foo
+
+h3: tuple[str, str] = ospath.split("bare")
+print(h3[0])  # (empty)
+print(h3[1])  # bare
+
+# basename / dirname
+print(ospath.basename("/usr/local/bin/spython"))  # spython
+print(ospath.dirname("/usr/local/bin/spython"))   # /usr/local/bin
+
+# splitext
+e1: tuple[str, str] = ospath.splitext("archive.tar.gz")
+print(e1[0])  # archive.tar
+print(e1[1])  # .gz
+
+e2: tuple[str, str] = ospath.splitext("noext")
+print(e2[0])  # noext
+print(e2[1])  # (empty)
+
+# Leading-dot basename has no extension.
+e3: tuple[str, str] = ospath.splitext(".bashrc")
+print(e3[0])  # .bashrc
+print(e3[1])  # (empty)
+
+# Dot in directory, not basename.
+e4: tuple[str, str] = ospath.splitext("/etc/rc.d/init")
+print(e4[0])  # /etc/rc.d/init
+print(e4[1])  # (empty)
+
+# Stat checks against known paths.
+print(ospath.exists("/tmp"))    # True
+print(ospath.isdir("/tmp"))     # True
+print(ospath.isfile("/tmp"))    # False
+print(ospath.exists("/definitely/does/not/exist/xyz"))  # False

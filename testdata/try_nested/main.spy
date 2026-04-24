@@ -1,0 +1,18 @@
+class Err(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+def run() -> str:
+    try:
+        try:
+            e = Err("x")
+            raise e
+        finally:
+            print("inner finally")
+    except Err as ex:
+        print("caught")
+        return ex.msg
+    return "no"
+
+x = run()
+print(x)

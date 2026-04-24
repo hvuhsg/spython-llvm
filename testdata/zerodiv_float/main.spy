@@ -1,0 +1,21 @@
+def safe_div(a: float, b: float) -> float:
+    try:
+        return a / b
+    except ZeroDivisionError as e:
+        print(e.msg)
+        return -1.0
+
+r = safe_div(3.0, 0.0)
+print(r)
+
+try:
+    x = 5.0 // 0.0
+    print(x)
+except ZeroDivisionError as e:
+    print(e.msg)
+
+try:
+    y = 5.0 % 0.0
+    print(y)
+except ZeroDivisionError as e:
+    print(e.msg)

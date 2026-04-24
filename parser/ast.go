@@ -83,6 +83,17 @@ type IndexAssignStmt struct {
 func (s *IndexAssignStmt) GetPos() Pos { return s.Pos }
 func (s *IndexAssignStmt) stmtNode()   {}
 
+// MultiAssignStmt represents tuple unpacking: `a, b = expr`. The right-hand
+// side must evaluate to a tuple whose arity matches the number of names.
+type MultiAssignStmt struct {
+	Pos   Pos
+	Names []string
+	Value Expr
+}
+
+func (s *MultiAssignStmt) GetPos() Pos { return s.Pos }
+func (s *MultiAssignStmt) stmtNode()   {}
+
 // AttrAssignStmt represents attribute assignment: `obj.attr = value`.
 type AttrAssignStmt struct {
 	Pos    Pos
@@ -136,6 +147,10 @@ type FuncDef struct {
 	Params     []FuncParam
 	ReturnType *TypeAnnotation
 	Body       []Stmt
+	// Extern, when true, marks this function as an FFI binding to a C symbol.
+	// Body is empty (either an inline `...` stub or an ignored block).
+	Extern       bool
+	ExternSymbol string // optional override; empty => default mangling spy_<module>_<name>
 }
 
 type FuncParam struct {
@@ -191,6 +206,37 @@ type FromImportStmt struct {
 func (s *FromImportStmt) GetPos() Pos { return s.Pos }
 func (s *FromImportStmt) stmtNode()   {}
 
+// TryStmt represents `try: ... except T as e: ... finally: ...`. At parse time
+// it is required to have at least one Excepts entry or a non-nil FinallyBody.
+type TryStmt struct {
+	Pos         Pos
+	Body        []Stmt
+	Excepts     []ExceptClause
+	FinallyBody []Stmt // nil when no finally clause is present
+	HasFinally  bool   // distinguishes `finally: pass` from "no finally"
+}
+
+// ExceptClause is one `except [T [as NAME]]:` arm.
+// ExcType == nil encodes a bare `except:` catch-all, which must be the last
+// clause in the try.
+type ExceptClause struct {
+	Pos     Pos
+	ExcType *TypeAnnotation
+	VarName string
+	Body    []Stmt
+}
+
+func (s *TryStmt) GetPos() Pos { return s.Pos }
+func (s *TryStmt) stmtNode()   {}
+
+type RaiseStmt struct {
+	Pos   Pos
+	Value Expr // v1 requires a value; bare re-raise is deferred
+}
+
+func (s *RaiseStmt) GetPos() Pos { return s.Pos }
+func (s *RaiseStmt) stmtNode()   {}
+
 type ClassDef struct {
 	Pos     Pos
 	Name    string
@@ -229,6 +275,18 @@ type StrLit struct {
 
 func (e *StrLit) GetPos() Pos { return e.Pos }
 func (e *StrLit) exprNode()   {}
+
+// BytesLit represents a b"..." / b'...' literal. Value holds the raw bytes
+// (Go strings are byte sequences, so this carries arbitrary octets including
+// nulls).
+type BytesLit struct {
+	baseExpr
+	Pos   Pos
+	Value string
+}
+
+func (e *BytesLit) GetPos() Pos { return e.Pos }
+func (e *BytesLit) exprNode()   {}
 
 type BoolLit struct {
 	baseExpr
@@ -325,6 +383,18 @@ type MapLit struct {
 
 func (e *MapLit) GetPos() Pos { return e.Pos }
 func (e *MapLit) exprNode()   {}
+
+// TupleLit is a parenthesized tuple literal: (x, y) or (x,) or () .
+// A parenthesized single expression without a trailing comma is NOT a tuple
+// — it's just grouping, and the parser returns the inner expression directly.
+type TupleLit struct {
+	baseExpr
+	Pos      Pos
+	Elements []Expr
+}
+
+func (e *TupleLit) GetPos() Pos { return e.Pos }
+func (e *TupleLit) exprNode()   {}
 
 // SuperExpr represents a bare `super()` expression. It is only valid inside a
 // method body and only as the object of an attribute-access, e.g.

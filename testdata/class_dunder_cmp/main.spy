@@ -20,9 +20,9 @@ class Money:
     def __ne__(self, other: Money) -> bool:
         return self.cents != other.cents
 
-a: Money = Money(500)
-b: Money = Money(500)
-c: Money = Money(300)
+a = Money(500)
+b = Money(500)
+c = Money(300)
 print(a == b)
 print(a == c)
 print(a != c)

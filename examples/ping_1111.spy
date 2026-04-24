@@ -1,0 +1,25 @@
+# examples/ping_1111.spy — TCP-reachability check against 1.1.1.1.
+#
+# Not a true ICMP ping: the stdlib/socket module only supports SOCK_STREAM,
+# so we connect to 1.1.1.1:80, send a minimal HTTP request, and print the
+# first line of the response. Exercises connect/send/recv/close end-to-end
+# against a real remote host and exercises DNS indirectly (the resolver path
+# is identical whether the input is a hostname or a literal IPv4).
+#
+# Requires network connectivity. Run with: spython run examples/ping_1111.spy
+
+from socket import socket, AF_INET, SOCK_STREAM
+
+s = socket(AF_INET, SOCK_STREAM)
+s.connect(("1.1.1.1", 80))
+
+req = b"GET / HTTP/1.0\r\nHost: 1.1.1.1\r\n\r\n"
+n = s.send(req)
+print("sent")
+print(n)
+
+resp = s.recv(256)
+print("recv")
+print(resp)
+
+s.close()

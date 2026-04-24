@@ -1,0 +1,12 @@
+# stdlib/base64.spy — RFC 4648 Base64 encode/decode.
+#
+# b64encode takes bytes, returns the ASCII representation as a str.
+# b64decode takes a str, returns the raw bytes it represents.
+# Invalid characters in the input to b64decode produce empty bytes
+# (exceptions across the FFI boundary aren't wired up here yet).
+
+@extern
+def b64encode(data: bytes) -> str: ...
+
+@extern
+def b64decode(s: str) -> bytes: ...

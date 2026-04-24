@@ -1,0 +1,16 @@
+import random
+
+random.seed(42)
+
+# Integer ranges
+print(random.randint(1, 100))
+print(random.randint(1, 100))
+print(random.randint(1, 100))
+
+# Bit widths
+print(random.getrandbits(8))
+print(random.getrandbits(16))
+
+# Reseed and verify reproducibility
+random.seed(42)
+print(random.randint(1, 100))

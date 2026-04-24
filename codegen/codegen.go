@@ -36,6 +36,12 @@ type Generator struct {
 	breakLabels    []string
 	continueLabels []string
 
+	// Finally-target stack. Each entry describes a try-with-finally that is
+	// currently open; break/continue/return inside its try body (or except
+	// bodies) must route through finally.entryLabel instead of branching
+	// directly to the loop/function exit.
+	finallyStack []finallyFrame
+
 	// Class codegen state
 	classes        []*types.ClassType                  // all classes across all modules in declaration order
 	classByName    map[string]*types.ClassType         // name -> class
@@ -51,6 +57,11 @@ type Generator struct {
 	// superclass-typed signature.
 	currentReturnType    types.Type
 	currentReturnLLVMType string
+
+	// Tracks C symbol names already emitted as `declare` statements for
+	// @extern functions. Prevents LLVM "invalid redefinition" errors when
+	// multiple modules bind to the same C symbol via explicit @extern("name").
+	declaredExterns map[string]bool
 }
 
 type varInfo struct {
@@ -60,13 +71,14 @@ type varInfo struct {
 
 func New() *Generator {
 	return &Generator{
-		vars:        make(map[string]varInfo),
-		classByName: map[string]*types.ClassType{},
-		classModule: map[*types.ClassType]string{},
-		classDef:    map[*types.ClassType]*parser.ClassDef{},
-		methodSlots: map[*types.ClassType]map[string]int{},
-		slotOrder:   map[*types.ClassType][]string{},
-		slotOwner:   map[*types.ClassType][]*types.ClassType{},
+		vars:            make(map[string]varInfo),
+		classByName:     map[string]*types.ClassType{},
+		classModule:     map[*types.ClassType]string{},
+		classDef:        map[*types.ClassType]*parser.ClassDef{},
+		methodSlots:     map[*types.ClassType]map[string]int{},
+		slotOrder:       map[*types.ClassType][]string{},
+		slotOwner:       map[*types.ClassType][]*types.ClassType{},
+		declaredExterns: map[string]bool{},
 	}
 }
 
@@ -96,6 +108,10 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 	// methods (e.g., auto-default __str__/__repr__).
 	for _, m := range modules {
 		for _, ct := range m.Classes {
+			if existing, ok := g.classByName[ct.Name]; ok {
+				return "", fmt.Errorf("duplicate class name %q: defined in modules %q and %q",
+					ct.Name, g.classModule[existing], m.ID)
+			}
 			g.classes = append(g.classes, ct)
 			g.classByName[ct.Name] = ct
 			g.classModule[ct] = m.ID
@@ -111,6 +127,12 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 
 	// Collect string constants across all modules
 	g.addStringConst(" ")
+	// Built-in messages used by compiler-inserted runtime checks.
+	g.addStringConst("integer division by zero")
+	g.addStringConst("integer modulo by zero")
+	g.addStringConst("float division by zero")
+	g.addStringConst("float floor division by zero")
+	g.addStringConst("float modulo")
 	for _, m := range modules {
 		for _, stmt := range m.Program.Stmts {
 			g.collectStringsInStmt(stmt)
@@ -159,6 +181,10 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 		g.moduleConsts = g.buildModuleConsts(m)
 		for _, stmt := range m.Program.Stmts {
 			if fd, ok := stmt.(*parser.FuncDef); ok {
+				if fd.Extern {
+					g.emitExternDecl(fd)
+					continue
+				}
 				if err := g.emitFuncDef(fd); err != nil {
 					return "", err
 				}
@@ -196,9 +222,12 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 	g.vars = map[string]varInfo{}
 	g.inFunction = false
 
-	g.emitLine("define i32 @main() {")
+	g.emitLine("define i32 @main(i32 %argc, i8** %argv) {")
 	g.emitLine("entry:")
 	g.emitLine("  call void @spy_init()")
+	// Publish argc/argv for sys.argv() et al. The runtime keeps them as
+	// globals; no cost if sys isn't imported.
+	g.emitLine("  call void @spy_argv_set(i32 %argc, i8** %argv)")
 
 	// Call each non-entry module's init in topological order
 	for _, m := range modules {
@@ -227,18 +256,36 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 	return g.buf.String(), nil
 }
 
+// moduleConstType returns the declared or inferred type of a top-level
+// constant assignment in an imported module. Annotated assignments use the
+// annotation; unannotated ones fall back to the type the checker resolved on
+// the RHS expression. Returns nil if neither source yields a type.
+func (g *Generator) moduleConstType(as *parser.AssignStmt) types.Type {
+	if as.TypeAnn != nil {
+		return g.resolveTypeAnnotation(as.TypeAnn)
+	}
+	if t, ok := as.Value.GetResolvedType().(types.Type); ok {
+		return t
+	}
+	return nil
+}
+
 // buildModuleConsts computes the map of module-scope names for a module:
-// its own top-level typed assignments (non-entry only) plus any from-imports.
-// These are the names visible at module scope but not allocated on the stack.
+// its own top-level constant assignments (non-entry only) plus any
+// from-imports. These are the names visible at module scope but not
+// allocated on the stack.
 func (g *Generator) buildModuleConsts(m *ModuleInput) map[string]varInfo {
 	out := map[string]varInfo{}
 	if !m.IsEntry {
 		for _, stmt := range m.Program.Stmts {
 			as, ok := stmt.(*parser.AssignStmt)
-			if !ok || as.TypeAnn == nil {
+			if !ok {
 				continue
 			}
-			t := g.resolveTypeAnnotation(as.TypeAnn)
+			t := g.moduleConstType(as)
+			if t == nil {
+				continue
+			}
 			out[as.Name] = varInfo{
 				llvmName: fmt.Sprintf("@spy_%s_%s", m.ID, as.Name),
 				typ:      t,
@@ -275,14 +322,17 @@ func (g *Generator) buildModuleConsts(m *ModuleInput) map[string]varInfo {
 }
 
 // emitModuleGlobals emits LLVM global declarations (zero-initialized) for each
-// top-level typed assignment in a non-entry module.
+// top-level constant assignment in a non-entry module.
 func (g *Generator) emitModuleGlobals(m *ModuleInput) error {
 	for _, stmt := range m.Program.Stmts {
 		as, ok := stmt.(*parser.AssignStmt)
-		if !ok || as.TypeAnn == nil {
+		if !ok {
 			continue
 		}
-		t := g.resolveTypeAnnotation(as.TypeAnn)
+		t := g.moduleConstType(as)
+		if t == nil {
+			continue
+		}
 		llvmT := g.llvmType(t)
 		g.emitLine(fmt.Sprintf("@spy_%s_%s = global %s %s", m.ID, as.Name, llvmT, g.zeroValue(t)))
 	}
@@ -306,11 +356,11 @@ func (g *Generator) zeroValue(t types.Type) string {
 	return "zeroinitializer"
 }
 
-// moduleHasInit reports whether a non-entry module has any top-level typed
-// assignments that need initialization at startup.
+// moduleHasInit reports whether a non-entry module has any top-level
+// constant assignments that need initialization at startup.
 func moduleHasInit(m *ModuleInput) bool {
 	for _, stmt := range m.Program.Stmts {
-		if as, ok := stmt.(*parser.AssignStmt); ok && as.TypeAnn != nil {
+		if _, ok := stmt.(*parser.AssignStmt); ok {
 			return true
 		}
 	}
@@ -333,14 +383,20 @@ func (g *Generator) emitModuleInit(m *ModuleInput) error {
 
 	for _, stmt := range m.Program.Stmts {
 		as, ok := stmt.(*parser.AssignStmt)
-		if !ok || as.TypeAnn == nil {
+		if !ok {
+			continue
+		}
+		t := g.moduleConstType(as)
+		if t == nil {
 			continue
 		}
 		val, err := g.emitExpr(as.Value)
 		if err != nil {
 			return err
 		}
-		t := g.resolveTypeAnnotation(as.TypeAnn)
+		if valType, ok := as.Value.GetResolvedType().(types.Type); ok && valType != nil {
+			val = g.castToType(val, valType, t)
+		}
 		llvmT := g.llvmType(t)
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* @spy_%s_%s", llvmT, val, llvmT, m.ID, as.Name))
 	}
@@ -356,6 +412,7 @@ func (g *Generator) emitModuleInit(m *ModuleInput) error {
 
 func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare void @spy_init()")
+	g.emitLine("declare void @spy_argv_set(i32, i8**)")
 	g.emitLine("declare void @spy_print_int(i64)")
 	g.emitLine("declare void @spy_print_float(double)")
 	g.emitLine("declare void @spy_print_bool(i1)")
@@ -384,6 +441,46 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare double @llvm.pow.f64(double, double)")
 	g.emitLine("declare double @llvm.floor.f64(double)")
 	g.emitLine("declare i8* @spy_instance_new(i64)")
+	g.emitLine("declare i8* @spy_bytearray_new(i64)")
+	g.emitLine("declare i8* @spy_bytearray_from_bytes(i8*)")
+	g.emitLine("declare i64 @spy_bytearray_get(i8*, i64)")
+	g.emitLine("declare void @spy_bytearray_set(i8*, i64, i64)")
+	g.emitLine("declare void @spy_bytearray_append(i8*, i64)")
+	g.emitLine("declare i8* @spy_bytearray_to_bytes(i8*)")
+	g.emitLine("declare i64 @spy_bytearray_len(i8*)")
+	// Exception ABI. setjmp is declared as returns_twice so LLVM does not
+	// hoist loads across the call. We call the C library setjmp directly —
+	// not the llvm.eh.sjlj.setjmp intrinsic, which has different semantics.
+	g.emitLine("declare i32 @setjmp(i8*) returns_twice")
+	g.emitLine("declare void @spy_exc_push(i8*)")
+	g.emitLine("declare void @spy_exc_pop()")
+	g.emitLine("declare i8* @spy_exc_current()")
+	g.emitLine("declare void @spy_exc_clear()")
+	g.emitLine("declare void @spy_exc_throw(i8*)")
+	g.emitLine("declare void @spy_exc_rethrow()")
+}
+
+// emitExternDecl emits an LLVM `declare` for an @extern function. The symbol
+// is fd.ExternSymbol if set, else the default mangling spy_<module>_<name>.
+// Declarations are deduplicated by symbol to stay within LLVM's one-declare-
+// per-symbol rule when multiple modules bind to the same C function.
+func (g *Generator) emitExternDecl(fd *parser.FuncDef) {
+	sym := fd.ExternSymbol
+	if sym == "" {
+		sym = fmt.Sprintf("spy_%s_%s", g.currentMod, fd.Name)
+	}
+	if g.declaredExterns[sym] {
+		return
+	}
+	g.declaredExterns[sym] = true
+	retType := g.getResolvedType(fd)
+	retLLVM := g.llvmType(retType)
+	params := []string{}
+	for _, p := range fd.Params {
+		pType := g.resolveTypeAnnotation(p.TypeAnn)
+		params = append(params, g.llvmType(pType))
+	}
+	g.emitLine(fmt.Sprintf("declare %s @%s(%s)", retLLVM, sym, strings.Join(params, ", ")))
 }
 
 func (g *Generator) emitFuncDef(fd *parser.FuncDef) error {
@@ -424,10 +521,11 @@ func (g *Generator) emitFuncDef(fd *parser.FuncDef) error {
 		}
 	}
 
-	// Add default return if needed
-	if retLLVM == "void" {
-		g.emitLine("  ret void")
-	}
+	// Ensure the trailing basic block has a terminator. A dangling label —
+	// e.g. the `try.end` emitted by a try whose body always returns through
+	// a finally — would otherwise leave the block unterminated and make the
+	// function invalid IR.
+	g.terminateOpenBlock(retLLVM)
 
 	g.emitLine("}")
 
@@ -455,6 +553,10 @@ func (g *Generator) resolveTypeAnnotation(ann *parser.TypeAnnotation) types.Type
 		return &types.BoolType{}
 	case "str":
 		return &types.StrType{}
+	case "bytes":
+		return &types.BytesType{}
+	case "bytearray":
+		return &types.BytearrayType{}
 	case "None":
 		return &types.NoneType{}
 	case "list":
@@ -465,6 +567,12 @@ func (g *Generator) resolveTypeAnnotation(ann *parser.TypeAnnotation) types.Type
 		if len(ann.Params) == 2 {
 			return &types.MapType{Key: g.resolveTypeAnnotation(ann.Params[0]), Value: g.resolveTypeAnnotation(ann.Params[1])}
 		}
+	case "tuple":
+		elems := make([]types.Type, len(ann.Params))
+		for i, p := range ann.Params {
+			elems[i] = g.resolveTypeAnnotation(p)
+		}
+		return &types.TupleType{Elements: elems}
 	}
 	if ct, ok := g.classByName[ann.Name]; ok {
 		return &types.InstanceType{Class: ct}
@@ -482,6 +590,8 @@ func (g *Generator) emitStmt(stmt parser.Stmt) error {
 		return g.emitAugAssignStmt(s)
 	case *parser.IndexAssignStmt:
 		return g.emitIndexAssignStmt(s)
+	case *parser.MultiAssignStmt:
+		return g.emitMultiAssignStmt(s)
 	case *parser.AttrAssignStmt:
 		return g.emitAttrAssignStmt(s)
 	case *parser.IfStmt:
@@ -500,17 +610,28 @@ func (g *Generator) emitStmt(stmt parser.Stmt) error {
 		if len(g.breakLabels) == 0 {
 			return fmt.Errorf("break outside loop")
 		}
+		if g.routeExit(breakKind, "", "") {
+			g.emitLine(fmt.Sprintf("%s:", g.newLabel("after.break")))
+			return nil
+		}
 		g.emitLine(fmt.Sprintf("  br label %%%s", g.breakLabels[len(g.breakLabels)-1]))
-		// Emit unreachable block for subsequent code
 		g.emitLine(fmt.Sprintf("%s:", g.newLabel("after.break")))
 		return nil
 	case *parser.ContinueStmt:
 		if len(g.continueLabels) == 0 {
 			return fmt.Errorf("continue outside loop")
 		}
+		if g.routeExit(continueKind, "", "") {
+			g.emitLine(fmt.Sprintf("%s:", g.newLabel("after.continue")))
+			return nil
+		}
 		g.emitLine(fmt.Sprintf("  br label %%%s", g.continueLabels[len(g.continueLabels)-1]))
 		g.emitLine(fmt.Sprintf("%s:", g.newLabel("after.continue")))
 		return nil
+	case *parser.TryStmt:
+		return g.emitTryStmt(s)
+	case *parser.RaiseStmt:
+		return g.emitRaiseStmt(s)
 	default:
 		return fmt.Errorf("unknown statement type: %T", stmt)
 	}
@@ -561,7 +682,7 @@ func (g *Generator) emitPrintCall(call *parser.CallExpr) error {
 			g.emitLine(fmt.Sprintf("  call void @spy_print_float(double %s)", val))
 		case *types.BoolType:
 			g.emitLine(fmt.Sprintf("  call void @spy_print_bool(i1 %s)", val))
-		case *types.StrType:
+		case *types.StrType, *types.BytesType:
 			g.emitLine(fmt.Sprintf("  call void @spy_print_str(i8* %s)", val))
 		case *types.InstanceType:
 			g.printInstance(val, t)
@@ -597,6 +718,18 @@ func (g *Generator) emitMethodCall(attr *parser.AttrExpr, args []parser.Expr) er
 		return nil
 	}
 
+	if _, ok := objType.(*types.BytearrayType); ok && attr.Attr == "append" {
+		if len(args) != 1 {
+			return fmt.Errorf("append takes 1 argument")
+		}
+		argVal, err := g.emitExpr(args[0])
+		if err != nil {
+			return err
+		}
+		g.emitLine(fmt.Sprintf("  call void @spy_bytearray_append(i8* %s, i64 %s)", objVal, argVal))
+		return nil
+	}
+
 	return fmt.Errorf("unknown method: %s.%s", objType, attr.Attr)
 }
 
@@ -610,18 +743,20 @@ func (g *Generator) emitAssignStmt(s *parser.AssignStmt) error {
 	var varType types.Type
 	if s.TypeAnn != nil {
 		varType = g.resolveTypeAnnotation(s.TypeAnn)
-	} else {
+	} else if info, ok := g.vars[s.Name]; ok {
 		// Reassignment
-		info, ok := g.vars[s.Name]
-		if !ok {
-			return fmt.Errorf("undefined variable: %s", s.Name)
-		}
 		llvmT := g.llvmType(info.typ)
 		if valType != nil {
 			val = g.castToType(val, valType, info.typ)
 		}
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", llvmT, val, llvmT, info.llvmName))
 		return nil
+	} else {
+		// First binding with inferred type (no annotation).
+		if valType == nil {
+			return fmt.Errorf("cannot infer type of %s", s.Name)
+		}
+		varType = valType
 	}
 
 	if valType != nil {
@@ -633,6 +768,40 @@ func (g *Generator) emitAssignStmt(s *parser.AssignStmt) error {
 	g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", llvmT, val, llvmT, allocaName))
 	g.vars[s.Name] = varInfo{llvmName: allocaName, typ: varType}
 
+	return nil
+}
+
+// emitMultiAssignStmt emits `a, b = expr`. For each name, GEP into the tuple
+// struct, load the element, and either reuse the existing alloca (for
+// reassignment) or create a new one (for first binding).
+func (g *Generator) emitMultiAssignStmt(s *parser.MultiAssignStmt) error {
+	rhs, err := g.emitExpr(s.Value)
+	if err != nil {
+		return err
+	}
+	tt, ok := s.Value.GetResolvedType().(*types.TupleType)
+	if !ok {
+		return fmt.Errorf("multi-assign RHS not tuple-typed")
+	}
+	structTy := g.tupleStructType(tt)
+	for i, name := range s.Names {
+		elemType := tt.Elements[i]
+		elemLLVM := g.llvmType(elemType)
+		slot := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = getelementptr %s, %s* %s, i32 0, i32 %d",
+			slot, structTy, structTy, rhs, i))
+		v := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", v, elemLLVM, elemLLVM, slot))
+
+		if info, already := g.vars[name]; already {
+			g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, v, elemLLVM, info.llvmName))
+			continue
+		}
+		alloca := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = alloca %s", alloca, elemLLVM))
+		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, v, elemLLVM, alloca))
+		g.vars[name] = varInfo{llvmName: alloca, typ: elemType}
+	}
 	return nil
 }
 
@@ -662,10 +831,13 @@ func (g *Generator) emitAugAssignStmt(s *parser.AugAssignStmt) error {
 		case "*":
 			g.emitLine(fmt.Sprintf("  %s = mul i64 %s, %s", result, curVal, rhsVal))
 		case "/":
+			g.emitIntDivZeroCheck(rhsVal, "/")
 			g.emitLine(fmt.Sprintf("  %s = sdiv i64 %s, %s", result, curVal, rhsVal))
 		case "//":
+			g.emitIntDivZeroCheck(rhsVal, "//")
 			g.emitLine(fmt.Sprintf("  %s = sdiv i64 %s, %s", result, curVal, rhsVal))
 		case "%":
+			g.emitIntDivZeroCheck(rhsVal, "%")
 			g.emitLine(fmt.Sprintf("  %s = srem i64 %s, %s", result, curVal, rhsVal))
 		case "**":
 			g.emitLine(fmt.Sprintf("  %s = call i64 @spy_int_pow(i64 %s, i64 %s)", result, curVal, rhsVal))
@@ -689,6 +861,7 @@ func (g *Generator) emitAugAssignStmt(s *parser.AugAssignStmt) error {
 		case "*":
 			g.emitLine(fmt.Sprintf("  %s = fmul double %s, %s", result, curVal, rhsVal))
 		case "/":
+			g.emitFloatDivZeroCheck(rhsVal, "/")
 			g.emitLine(fmt.Sprintf("  %s = fdiv double %s, %s", result, curVal, rhsVal))
 		}
 	}
@@ -737,6 +910,10 @@ func (g *Generator) emitIndexAssignStmt(s *parser.IndexAssignStmt) error {
 		valCast := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", valCast, valLLVM, valAlloca))
 		g.emitLine(fmt.Sprintf("  call void @spy_map_set(i8* %s, i8* %s, i8* %s)", objVal, keyCast, valCast))
+
+	case *types.BytearrayType:
+		_ = t
+		g.emitLine(fmt.Sprintf("  call void @spy_bytearray_set(i8* %s, i64 %s, i64 %s)", objVal, idxVal, valVal))
 	}
 
 	return nil
@@ -1142,6 +1319,10 @@ func (g *Generator) emitForStr(s *parser.ForStmt, strVal string) error {
 
 func (g *Generator) emitReturnStmt(s *parser.ReturnStmt) error {
 	if s.Value == nil {
+		if g.routeExit(returnKind, "", "void") {
+			g.emitLine(fmt.Sprintf("%s:", g.newLabel("after.return")))
+			return nil
+		}
 		g.emitLine("  ret void")
 		return nil
 	}
@@ -1152,13 +1333,17 @@ func (g *Generator) emitReturnStmt(s *parser.ReturnStmt) error {
 	}
 
 	valType := s.Value.GetResolvedType().(types.Type)
-	// Upcast to the declared function return type if necessary.
+	retLLVM := g.currentReturnLLVMType
 	if g.currentReturnLLVMType != "" && g.currentReturnType != nil {
 		val = g.castToType(val, valType, g.currentReturnType)
-		g.emitLine(fmt.Sprintf("  ret %s %s", g.currentReturnLLVMType, val))
+	} else {
+		retLLVM = g.llvmType(valType)
+	}
+	if g.routeExit(returnKind, val, retLLVM) {
+		g.emitLine(fmt.Sprintf("%s:", g.newLabel("after.return")))
 		return nil
 	}
-	g.emitLine(fmt.Sprintf("  ret %s %s", g.llvmType(valType), val))
+	g.emitLine(fmt.Sprintf("  ret %s %s", retLLVM, val))
 	return nil
 }
 
@@ -1179,6 +1364,8 @@ func (g *Generator) emitExpr(expr parser.Expr) (string, error) {
 
 	case *parser.StrLit:
 		return g.emitStrLit(e)
+	case *parser.BytesLit:
+		return g.emitBytesLit(e)
 
 	case *parser.NoneLit:
 		return "void", nil
@@ -1272,6 +1459,9 @@ func (g *Generator) emitExpr(expr parser.Expr) (string, error) {
 	case *parser.MapLit:
 		return g.emitMapLit(e)
 
+	case *parser.TupleLit:
+		return g.emitTupleLit(e)
+
 	case *parser.SuperExpr:
 		return "", fmt.Errorf("bare super() is not a value; use super().method(...)")
 
@@ -1281,6 +1471,17 @@ func (g *Generator) emitExpr(expr parser.Expr) (string, error) {
 }
 
 func (g *Generator) emitStrLit(e *parser.StrLit) (string, error) {
+	idx := g.getStringIndex(e.Value)
+	tmp := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_new(i8* getelementptr ([%d x i8], [%d x i8]* @.str.%d, i64 0, i64 0), i64 %d)",
+		tmp, len(e.Value), len(e.Value), idx, len(e.Value)))
+	return tmp, nil
+}
+
+// emitBytesLit uses the same runtime layout as strings: a length-prefixed
+// heap-allocated buffer. The distinction between str and bytes exists only in
+// the type system.
+func (g *Generator) emitBytesLit(e *parser.BytesLit) (string, error) {
 	idx := g.getStringIndex(e.Value)
 	tmp := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_new(i8* getelementptr ([%d x i8], [%d x i8]* @.str.%d, i64 0, i64 0), i64 %d)",
@@ -1336,10 +1537,13 @@ func (g *Generator) emitBinaryExpr(e *parser.BinaryExpr) (string, error) {
 		case "*":
 			g.emitLine(fmt.Sprintf("  %s = mul i64 %s, %s", result, leftVal, rightVal))
 		case "/":
+			g.emitIntDivZeroCheck(rightVal, "/")
 			g.emitLine(fmt.Sprintf("  %s = sdiv i64 %s, %s", result, leftVal, rightVal))
 		case "//":
+			g.emitIntDivZeroCheck(rightVal, "//")
 			g.emitLine(fmt.Sprintf("  %s = sdiv i64 %s, %s", result, leftVal, rightVal))
 		case "%":
+			g.emitIntDivZeroCheck(rightVal, "%")
 			g.emitLine(fmt.Sprintf("  %s = srem i64 %s, %s", result, leftVal, rightVal))
 		case "**":
 			// Use runtime helper for integer power
@@ -1377,13 +1581,16 @@ func (g *Generator) emitBinaryExpr(e *parser.BinaryExpr) (string, error) {
 		case "*":
 			g.emitLine(fmt.Sprintf("  %s = fmul double %s, %s", result, leftVal, rightVal))
 		case "/":
+			g.emitFloatDivZeroCheck(rightVal, "/")
 			g.emitLine(fmt.Sprintf("  %s = fdiv double %s, %s", result, leftVal, rightVal))
 		case "//":
+			g.emitFloatDivZeroCheck(rightVal, "//")
 			// Floor division for floats: fdiv then floor
 			tmpDiv := g.newTmp()
 			g.emitLine(fmt.Sprintf("  %s = fdiv double %s, %s", tmpDiv, leftVal, rightVal))
 			g.emitLine(fmt.Sprintf("  %s = call double @llvm.floor.f64(double %s)", result, tmpDiv))
 		case "%":
+			g.emitFloatDivZeroCheck(rightVal, "%")
 			g.emitLine(fmt.Sprintf("  %s = frem double %s, %s", result, leftVal, rightVal))
 		case "**":
 			g.emitLine(fmt.Sprintf("  %s = call double @llvm.pow.f64(double %s, double %s)", result, leftVal, rightVal))
@@ -1524,6 +1731,10 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 			return g.emitFloatConversion(e)
 		case "str":
 			return g.emitStrConversion(e)
+		case "bytes":
+			return g.emitBytesConversion(e)
+		case "bytearray":
+			return g.emitBytearrayConversion(e)
 		case "print":
 			// print as expression
 			if err := g.emitPrintCall(e); err != nil {
@@ -1538,6 +1749,12 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 
 	// Method or module-function calls via attribute access
 	if attr, ok := e.Func.(*parser.AttrExpr); ok {
+		// module.ClassName(...) — the AttrExpr resolves to a ClassType when the
+		// attribute names a class exported by the module. Route to the same
+		// constructor path as a bare ClassName(...) call.
+		if ct, ok := e.Func.GetResolvedType().(*types.ClassType); ok {
+			return g.emitConstructorCall(ct, e.Args)
+		}
 		// super().method(...) — direct (non-virtual) call to base's method.
 		if _, isSuper := attr.Object.(*parser.SuperExpr); isSuper {
 			return g.emitSuperCall(attr, e.Args)
@@ -1548,6 +1765,11 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 		}
 		// If the receiver is a module, it's a cross-module function call.
 		if modT, isMod := attr.Object.GetResolvedType().(*types.ModuleType); isMod {
+			// An @extern binding with an explicit C symbol overrides the
+			// default spy_<module>_<name> mangling.
+			if ft, ok := e.Func.GetResolvedType().(*types.FuncType); ok && ft.ExternSymbol != "" {
+				return g.emitUserCall(ft.ExternSymbol, e)
+			}
 			return g.emitUserCall(fmt.Sprintf("spy_%s_%s", modT.ID, attr.Attr), e)
 		}
 		// Otherwise it's a method (existing behavior: list.append, etc.)
@@ -1567,6 +1789,10 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 
 	// User-defined function call via plain identifier
 	if ident, ok := e.Func.(*parser.IdentExpr); ok {
+		// @extern function with explicit symbol bypasses all name mangling.
+		if ft, ok := ident.GetResolvedType().(*types.FuncType); ok && ft.ExternSymbol != "" {
+			return g.emitUserCall(ft.ExternSymbol, e)
+		}
 		// If this is a from-import binding (possibly aliased), use the
 		// mangled name recorded in moduleConsts so aliases resolve to
 		// the original symbol.
@@ -1635,8 +1861,10 @@ func (g *Generator) emitLenCall(e *parser.CallExpr) (string, error) {
 	result := g.newTmp()
 
 	switch argType.(type) {
-	case *types.StrType:
+	case *types.StrType, *types.BytesType:
 		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_str_len(i8* %s)", result, argVal))
+	case *types.BytearrayType:
+		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_bytearray_len(i8* %s)", result, argVal))
 	case *types.ListType:
 		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_list_len(i8* %s)", result, argVal))
 	case *types.MapType:
@@ -1698,6 +1926,9 @@ func (g *Generator) emitStrConversion(e *parser.CallExpr) (string, error) {
 	switch argType.(type) {
 	case *types.StrType:
 		return argVal, nil
+	case *types.BytesType:
+		// bytes and str share the [i64 len][data] layout — reinterpret, no copy.
+		return argVal, nil
 	case *types.IntType:
 		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_int_to_str(i64 %s)", result, argVal))
 	case *types.FloatType:
@@ -1706,6 +1937,50 @@ func (g *Generator) emitStrConversion(e *parser.CallExpr) (string, error) {
 		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_bool_to_str(i1 %s)", result, argVal))
 	}
 
+	return result, nil
+}
+
+// emitBytesConversion handles bytes(x). str/bytes share a runtime layout so
+// those conversions are zero-cost; bytearray needs a copy through
+// spy_bytearray_to_bytes.
+func (g *Generator) emitBytesConversion(e *parser.CallExpr) (string, error) {
+	argVal, err := g.emitExpr(e.Args[0])
+	if err != nil {
+		return "", err
+	}
+	argType := e.Args[0].GetResolvedType().(types.Type)
+	if _, ok := argType.(*types.BytearrayType); ok {
+		result := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_bytearray_to_bytes(i8* %s)", result, argVal))
+		return result, nil
+	}
+	return argVal, nil
+}
+
+// emitBytearrayConversion handles bytearray(x):
+//   - bytearray(int n)   -> zero-filled buffer of length n
+//   - bytearray(bytes b) -> copy of b
+//   - bytearray(ba)      -> shallow copy via spy_bytearray_to_bytes + from_bytes
+func (g *Generator) emitBytearrayConversion(e *parser.CallExpr) (string, error) {
+	argVal, err := g.emitExpr(e.Args[0])
+	if err != nil {
+		return "", err
+	}
+	argType := e.Args[0].GetResolvedType().(types.Type)
+	result := g.newTmp()
+	switch argType.(type) {
+	case *types.IntType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_bytearray_new(i64 %s)", result, argVal))
+	case *types.BytesType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_bytearray_from_bytes(i8* %s)", result, argVal))
+	case *types.BytearrayType:
+		// Round-trip bytearray -> bytes -> bytearray to produce an independent copy.
+		asBytes := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_bytearray_to_bytes(i8* %s)", asBytes, argVal))
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_bytearray_from_bytes(i8* %s)", result, asBytes))
+	default:
+		return "", fmt.Errorf("bytearray() cannot be constructed from %s", argType)
+	}
 	return result, nil
 }
 
@@ -1725,6 +2000,37 @@ func (g *Generator) emitIndexExpr(e *parser.IndexExpr) (string, error) {
 	case *types.StrType:
 		result := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_index(i8* %s, i64 %s)", result, objVal, idxVal))
+		return result, nil
+
+	case *types.BytesType:
+		// Layout: [i64 len][data...]. Payload starts at offset sizeof(int64_t)=8.
+		// bytes[i] returns int(0..255): load one byte, zero-extend to i64.
+		offset := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = add i64 %s, 8", offset, idxVal))
+		elemPtr := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = getelementptr i8, i8* %s, i64 %s", elemPtr, objVal, offset))
+		b := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load i8, i8* %s", b, elemPtr))
+		result := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = zext i8 %s to i64", result, b))
+		return result, nil
+
+	case *types.BytearrayType:
+		result := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_bytearray_get(i8* %s, i64 %s)", result, objVal, idxVal))
+		return result, nil
+
+	case *types.TupleType:
+		// The type checker already guaranteed the index is a constant IntLit
+		// in range, so we can trust the literal value here.
+		lit := e.Index.(*parser.IntLit)
+		structTy := g.tupleStructType(t)
+		elemLLVM := g.llvmType(t.Elements[lit.Value])
+		slot := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = getelementptr %s, %s* %s, i32 0, i32 %d",
+			slot, structTy, structTy, objVal, lit.Value))
+		result := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", result, elemLLVM, elemLLVM, slot))
 		return result, nil
 
 	case *types.ListType:
@@ -1831,6 +2137,45 @@ func (g *Generator) emitMapLit(e *parser.MapLit) (string, error) {
 	return mapVal, nil
 }
 
+// emitTupleLit allocates a GC-managed struct, stores each element, and
+// returns the pointer.
+func (g *Generator) emitTupleLit(e *parser.TupleLit) (string, error) {
+	tt, ok := e.GetResolvedType().(*types.TupleType)
+	if !ok {
+		return "", fmt.Errorf("tuple literal without resolved type")
+	}
+	structTy := g.tupleStructType(tt)
+
+	// Evaluate elements left-to-right.
+	vals := make([]string, len(e.Elements))
+	for i, el := range e.Elements {
+		v, err := g.emitExpr(el)
+		if err != nil {
+			return "", err
+		}
+		vals[i] = v
+	}
+
+	// sizeof trick: ptrtoint (GEP null, 1) gives the struct size.
+	sizeTmp := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = ptrtoint %s* getelementptr (%s, %s* null, i32 1) to i64",
+		sizeTmp, structTy, structTy, structTy))
+	raw := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_instance_new(i64 %s)", raw, sizeTmp))
+	ptr := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", ptr, raw, structTy))
+
+	// Store each element at its struct index.
+	for i, v := range vals {
+		elemLLVM := g.llvmType(tt.Elements[i])
+		slot := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = getelementptr %s, %s* %s, i32 0, i32 %d",
+			slot, structTy, structTy, ptr, i))
+		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, v, elemLLVM, slot))
+	}
+	return ptr, nil
+}
+
 // Helper methods
 
 func (g *Generator) llvmType(t types.Type) string {
@@ -1843,6 +2188,10 @@ func (g *Generator) llvmType(t types.Type) string {
 		return "i1"
 	case *types.StrType:
 		return "i8*"
+	case *types.BytesType:
+		return "i8*"
+	case *types.BytearrayType:
+		return "i8*"
 	case *types.NoneType:
 		return "void"
 	case *types.ListType:
@@ -1851,8 +2200,20 @@ func (g *Generator) llvmType(t types.Type) string {
 		return "i8*"
 	case *types.InstanceType:
 		return fmt.Sprintf("%%Class.%s*", v.Class.Name)
+	case *types.TupleType:
+		return g.tupleStructType(v) + "*"
 	}
 	return "i64"
+}
+
+// tupleStructType returns the LLVM struct type (without the pointer suffix)
+// for a tuple type. E.g. tuple[int, str] -> "{i64, i8*}".
+func (g *Generator) tupleStructType(t *types.TupleType) string {
+	parts := make([]string, len(t.Elements))
+	for i, e := range t.Elements {
+		parts[i] = g.llvmType(e)
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
 }
 
 func (g *Generator) typeSize(t types.Type) int {
@@ -1880,6 +2241,43 @@ func (g *Generator) newTmp() string {
 	return fmt.Sprintf("%%t%d", g.tmpCounter)
 }
 
+// terminateOpenBlock ensures the last block emitted in the current function
+// has a terminator. Inspects the tail of the buffer: if the last non-empty
+// line is a `label:` with no following instruction, emits either `ret void`
+// (for void-returning functions) or `unreachable`. Safe no-op otherwise.
+func (g *Generator) terminateOpenBlock(retLLVM string) {
+	s := g.buf.String()
+	// Trim trailing whitespace/newlines and find the last line.
+	end := len(s)
+	for end > 0 && (s[end-1] == '\n' || s[end-1] == ' ' || s[end-1] == '\t') {
+		end--
+	}
+	start := end
+	for start > 0 && s[start-1] != '\n' {
+		start--
+	}
+	last := s[start:end]
+	// A label line ends in ":" and has no leading "  " (instructions are
+	// indented). Also exclude comment-only lines.
+	if len(last) == 0 || last[len(last)-1] != ':' {
+		// Last line isn't a label. It's either a terminator (br/ret/etc.)
+		// or a regular instruction. For regular instructions, we still
+		// may need a terminator — but the only case where we'd emit a
+		// non-terminator as the final line is if someone emitted partial
+		// code; existing codegen always ends blocks with terminators. For
+		// void functions, add the usual implicit `ret void`.
+		if retLLVM == "void" {
+			g.emitLine("  ret void")
+		}
+		return
+	}
+	if retLLVM == "void" {
+		g.emitLine("  ret void")
+	} else {
+		g.emitLine("  unreachable")
+	}
+}
+
 func (g *Generator) newLabel(prefix string) string {
 	g.lblCounter++
 	return fmt.Sprintf("%s.%d", prefix, g.lblCounter)
@@ -1897,6 +2295,8 @@ func (g *Generator) collectStringsInStmt(stmt parser.Stmt) {
 	case *parser.AssignStmt:
 		g.collectStringsInExpr(s.Value)
 	case *parser.AugAssignStmt:
+		g.collectStringsInExpr(s.Value)
+	case *parser.MultiAssignStmt:
 		g.collectStringsInExpr(s.Value)
 	case *parser.IndexAssignStmt:
 		g.collectStringsInExpr(s.Object)
@@ -1943,12 +2343,28 @@ func (g *Generator) collectStringsInStmt(stmt parser.Stmt) {
 		if s.Value != nil {
 			g.collectStringsInExpr(s.Value)
 		}
+	case *parser.TryStmt:
+		for _, stmt := range s.Body {
+			g.collectStringsInStmt(stmt)
+		}
+		for _, ec := range s.Excepts {
+			for _, stmt := range ec.Body {
+				g.collectStringsInStmt(stmt)
+			}
+		}
+		for _, stmt := range s.FinallyBody {
+			g.collectStringsInStmt(stmt)
+		}
+	case *parser.RaiseStmt:
+		g.collectStringsInExpr(s.Value)
 	}
 }
 
 func (g *Generator) collectStringsInExpr(expr parser.Expr) {
 	switch e := expr.(type) {
 	case *parser.StrLit:
+		g.addStringConst(e.Value)
+	case *parser.BytesLit:
 		g.addStringConst(e.Value)
 	case *parser.BinaryExpr:
 		g.collectStringsInExpr(e.Left)
@@ -1976,6 +2392,10 @@ func (g *Generator) collectStringsInExpr(expr parser.Expr) {
 		for _, v := range e.Values {
 			g.collectStringsInExpr(v)
 		}
+	case *parser.TupleLit:
+		for _, el := range e.Elements {
+			g.collectStringsInExpr(el)
+		}
 	}
 }
 
@@ -2000,21 +2420,23 @@ func (g *Generator) getStringIndex(s string) int {
 }
 
 func (g *Generator) escapeString(s string) string {
-	result := ""
-	for _, c := range s {
-		if c == '\n' {
-			result += "\\0A"
-		} else if c == '\t' {
-			result += "\\09"
-		} else if c == '\\' {
-			result += "\\5C"
-		} else if c == '"' {
-			result += "\\22"
-		} else if c == 0 {
-			result += "\\00"
-		} else {
-			result += string(c)
+	// Iterate by byte, not rune, to support non-UTF-8 content (bytes literals
+	// can contain arbitrary octets). Emit anything outside printable ASCII as
+	// a hex escape so the [N x i8] length matches the emitted payload exactly.
+	result := make([]byte, 0, len(s))
+	const hex = "0123456789ABCDEF"
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		switch {
+		case b == '\\':
+			result = append(result, '\\', '5', 'C')
+		case b == '"':
+			result = append(result, '\\', '2', '2')
+		case b >= 0x20 && b < 0x7f:
+			result = append(result, b)
+		default:
+			result = append(result, '\\', hex[b>>4], hex[b&0x0f])
 		}
 	}
-	return result
+	return string(result)
 }

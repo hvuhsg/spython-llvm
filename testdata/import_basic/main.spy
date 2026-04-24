@@ -1,6 +1,6 @@
 import helper
 
-x: int = helper.add(2, 3)
-y: int = helper.mul(4, 5)
+x = helper.add(2, 3)
+y = helper.mul(4, 5)
 print(x)
 print(y)

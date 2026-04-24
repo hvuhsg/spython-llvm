@@ -1,0 +1,124 @@
+# stdlib/struct.spy — binary pack/unpack primitives.
+#
+# Unlike Python's struct module we don't accept format strings (spython has
+# no varargs). Instead, packers append one value to a bytearray and unpackers
+# read one value at an offset. Build up a packet by appending into a
+# bytearray; decode by reading at successive offsets.
+#
+# Naming: pack_<type>_<endian> where type is u8/i8/u16/i16/u32/i32/u64/i64
+# or f32/f64, and endian is le/be. Single-byte types have no endian suffix.
+#
+# Usage:
+#   from struct import pack_u32_le, unpack_u32_le
+#   ba: bytearray = bytearray()
+#   pack_u32_le(ba, 0x41424344)
+#   payload: bytes = bytes(ba)
+#   v: int = unpack_u32_le(payload, 0)
+
+@extern
+def pack_u8(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_i8(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_u16_le(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_u16_be(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_i16_le(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_i16_be(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_u32_le(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_u32_be(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_i32_le(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_i32_be(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_u64_le(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_u64_be(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_i64_le(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_i64_be(ba: bytearray, v: int) -> None: ...
+
+@extern
+def pack_f32_le(ba: bytearray, v: float) -> None: ...
+
+@extern
+def pack_f32_be(ba: bytearray, v: float) -> None: ...
+
+@extern
+def pack_f64_le(ba: bytearray, v: float) -> None: ...
+
+@extern
+def pack_f64_be(ba: bytearray, v: float) -> None: ...
+
+@extern
+def unpack_u8(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_i8(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_u16_le(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_u16_be(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_i16_le(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_i16_be(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_u32_le(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_u32_be(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_i32_le(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_i32_be(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_u64_le(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_u64_be(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_i64_le(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_i64_be(data: bytes, offset: int) -> int: ...
+
+@extern
+def unpack_f32_le(data: bytes, offset: int) -> float: ...
+
+@extern
+def unpack_f32_be(data: bytes, offset: int) -> float: ...
+
+@extern
+def unpack_f64_le(data: bytes, offset: int) -> float: ...
+
+@extern
+def unpack_f64_be(data: bytes, offset: int) -> float: ...

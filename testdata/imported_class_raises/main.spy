@@ -1,0 +1,28 @@
+import safebox
+from safebox import Box, BoxError
+
+b = Box(10)
+b.add(3)
+print(b.count)
+
+# Builtin exception raised inside an imported module's method.
+try:
+    b.add(-1)
+except ValueError as e:
+    print("caught value")
+    print(e.msg)
+
+# Custom exception class defined in the imported module.
+try:
+    b.add(100)
+except BoxError as e:
+    print("caught box")
+    print(e.msg)
+
+# isinstance must keep working across modules — BoxError is also an Exception.
+try:
+    b2 = safebox.Box(2)
+    b2.add(5)
+except Exception as e:
+    print("caught as exception")
+    print(e.msg)

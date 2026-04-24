@@ -1,0 +1,76 @@
+# stdlib/socket.spy — Minimal TCP socket client. Backed by stdlib/socket.c.
+# The v1 API supports AF_INET + SOCK_STREAM (IPv4 TCP) clients only: no
+# bind/listen/accept, no select/poll, no timeouts. Sockets are blocking.
+#
+# Usage:
+#   from socket import socket, AF_INET, SOCK_STREAM
+#   s = socket(AF_INET, SOCK_STREAM)
+#   s.connect(("127.0.0.1", 8080))
+#   n = s.send(b"hello")
+#   data = s.recv(4096)
+#   s.close()
+
+AF_INET = 2
+SOCK_STREAM = 1
+
+@extern
+def _socket(family: int, type: int) -> int: ...
+
+@extern
+def _connect(fd: int, host: str, port: int) -> int: ...
+
+@extern
+def _send(fd: int, data: bytes) -> int: ...
+
+@extern
+def _recv(fd: int, n: int) -> bytes: ...
+
+@extern
+def _close(fd: int) -> None: ...
+
+# Classifier: 0 ok, 1 ECONNREFUSED, 2 other.
+@extern
+def _last_error_class() -> int: ...
+
+def _raise_socket_error(msg: str) -> None:
+    cls = _last_error_class()
+    if cls == 1:
+        e1 = ConnectionRefusedError(msg)
+        raise e1
+    e = OSError(msg)
+    raise e
+
+class Socket:
+    def __init__(self, family: int, type: int):
+        self.family = family
+        self.type = type
+        self.fd = _socket(family, type)
+        if self.fd < 0:
+            _raise_socket_error("socket() failed")
+
+    def connect(self, addr: tuple[str, int]) -> None:
+        host = addr[0]
+        port = addr[1]
+        rc = _connect(self.fd, host, port)
+        if rc < 0:
+            _raise_socket_error(host)
+
+    def send(self, data: bytes) -> int:
+        n = _send(self.fd, data)
+        if n < 0:
+            _raise_socket_error("send failed")
+        return n
+
+    def recv(self, n: int) -> bytes:
+        data = _recv(self.fd, n)
+        cls = _last_error_class()
+        if cls != 0:
+            _raise_socket_error("recv failed")
+        return data
+
+    def close(self) -> None:
+        _close(self.fd)
+
+# Factory matching Python's socket.socket(family, type).
+def socket(family: int, type: int) -> Socket:
+    return Socket(family, type)

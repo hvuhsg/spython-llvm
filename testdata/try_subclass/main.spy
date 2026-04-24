@@ -1,0 +1,15 @@
+class BaseErr(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+class SubErr(BaseErr):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+try:
+    e = SubErr("sub")
+    raise e
+except BaseErr as ex:
+    print("caught base")
+    print(ex.msg)
+print("after")

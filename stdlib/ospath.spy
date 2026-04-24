@@ -1,0 +1,86 @@
+# stdlib/ospath.spy — POSIX-style path manipulation and stat checks.
+#
+# Named `ospath` rather than `os.path` because spython's module resolver is
+# flat (no dotted packages yet). Mirrors the CPython os.path surface:
+# join, split, basename, dirname, splitext, exists, isfile, isdir.
+#
+# Usage:
+#   import ospath
+#   if ospath.isfile("/tmp/foo.txt"):
+#       base: str = ospath.basename("/tmp/foo.txt")   # "foo.txt"
+
+import os
+
+# C helpers in ospath.c: substring slicing and rfind by byte value. These
+# exist because spython's runtime only exposes single-char indexing + concat;
+# building `dirname` out of those would be quadratic.
+
+@extern
+def _substr(s: str, start: int, end: int) -> str: ...
+
+@extern
+def _rfind_char(s: str, ch: str) -> int: ...
+
+def join(a: str, b: str) -> str:
+    if len(a) == 0:
+        return b
+    # If b is absolute, return it unchanged (CPython behavior).
+    if len(b) > 0 and b[0] == "/":
+        return b
+    if a[len(a) - 1] == "/":
+        return a + b
+    return a + "/" + b
+
+# split("/a/b/c") -> ("/a/b", "c"). Separator stripped from the head except
+# when head is just "/" (i.e. splitting "/foo" -> ("/", "foo")).
+def split(path: str) -> tuple[str, str]:
+    i: int = _rfind_char(path, "/")
+    if i < 0:
+        return ("", path)
+    head: str = _substr(path, 0, i)
+    tail: str = _substr(path, i + 1, len(path))
+    if len(head) == 0:
+        head = "/"
+    return (head, tail)
+
+def basename(path: str) -> str:
+    pair: tuple[str, str] = split(path)
+    return pair[1]
+
+def dirname(path: str) -> str:
+    pair: tuple[str, str] = split(path)
+    return pair[0]
+
+# splitext("foo.tar.gz") -> ("foo.tar", ".gz"). Returns (path, "") when there
+# is no extension. A leading-dot file like ".bashrc" has no extension.
+def splitext(path: str) -> tuple[str, str]:
+    last_sep: int = _rfind_char(path, "/")
+    last_dot: int = _rfind_char(path, ".")
+    # No dot, or dot is in the directory part, or dot is a leading-dot basename.
+    if last_dot < 0 or last_dot <= last_sep or last_dot == last_sep + 1:
+        return (path, "")
+    root: str = _substr(path, 0, last_dot)
+    ext: str = _substr(path, last_dot, len(path))
+    return (root, ext)
+
+def exists(path: str) -> bool:
+    return os._stat_mode(path) >= 0
+
+# POSIX st_mode bit-layout: S_IFMT = 0170000 masks out the file-type bits;
+# S_IFREG = 0100000, S_IFDIR = 0040000. Using decimal here because spython
+# has no octal literal syntax yet.
+_S_IFMT: int = 61440    # 0o170000
+_S_IFREG: int = 32768   # 0o100000
+_S_IFDIR: int = 16384   # 0o040000
+
+def isfile(path: str) -> bool:
+    m: int = os._stat_mode(path)
+    if m < 0:
+        return False
+    return (m & _S_IFMT) == _S_IFREG
+
+def isdir(path: str) -> bool:
+    m: int = os._stat_mode(path)
+    if m < 0:
+        return False
+    return (m & _S_IFMT) == _S_IFDIR

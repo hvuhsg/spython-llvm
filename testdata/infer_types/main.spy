@@ -1,0 +1,52 @@
+# Infer types from literal RHS.
+a = 42
+b = 3.5
+c = "hello"
+d = True
+
+print(a)
+print(b)
+print(c)
+print(d)
+
+# Infer from binary op.
+e = a + 8
+print(e)
+
+# Infer from list literal (non-empty) and index.
+nums = [10, 20, 30]
+print(nums[0])
+print(nums[2])
+
+# Infer from tuple literal.
+t = (1, "two")
+print(t[0])
+print(t[1])
+
+# Infer from function call (builtin).
+n = len(nums)
+print(n)
+
+# Infer from user function call.
+def square(x: int) -> int:
+    return x * x
+
+s = square(9)
+print(s)
+
+# Reassignment of an inferred variable (must keep the inferred type).
+a = 100
+print(a)
+
+# Mix of annotated and inferred in the same scope.
+annotated: int = 7
+inferred = annotated + 1
+print(inferred)
+
+# Inference inside a function body.
+def compute(x: int) -> int:
+    doubled = x * 2
+    bumped = doubled + 1
+    return bumped
+
+print(compute(5))

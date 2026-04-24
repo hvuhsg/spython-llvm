@@ -1,0 +1,12 @@
+class Circle:
+    def __init__(self, r: float):
+        self.r = r
+    def area(self) -> float:
+        return 3.14 * self.r * self.r
+
+class Box:
+    def __init__(self, w: float, h: float):
+        self.w = w
+        self.h = h
+    def area(self) -> float:
+        return self.w * self.h
