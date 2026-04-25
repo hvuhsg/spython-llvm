@@ -299,6 +299,8 @@ total: float = 0.0
         <li>str</li>
         <li>list[T]</li>
         <li>dict[K, V]</li>
+        <li>tuple</li>
+        <li>bytes, bytearray</li>
         <li>None</li>
         <li>user-defined classes</li>
       </ul>
@@ -355,6 +357,28 @@ total: float = 0.0
       </ul>
     </div>
     <div class="card">
+      <h3>Exceptions</h3>
+      <ul>
+        <li>raise / try / except / finally</li>
+        <li>Exception, ArithmeticError</li>
+        <li>ZeroDivisionError, ValueError</li>
+        <li>TypeError, OSError, …</li>
+        <li>user-defined subclasses</li>
+        <li>propagation across calls</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Stdlib</h3>
+      <ul>
+        <li>math, random, time</li>
+        <li>io, os, os.path, sys</li>
+        <li>hashlib, binascii, base64</li>
+        <li>struct, socket</li>
+        <li>.spy shim + sibling .c file</li>
+        <li>FFI via // spython-link:</li>
+      </ul>
+    </div>
+    <div class="card">
       <h3>Operators</h3>
       <ul>
         <li>arithmetic: + - * / // % **</li>
@@ -383,17 +407,15 @@ total: float = 0.0
     <li>multiple inheritance, MRO</li>
     <li>decorators (@property, @staticmethod, @classmethod, …)</li>
     <li>generators, yield, async / await</li>
-    <li>exceptions (try / except / raise / finally)</li>
     <li>dynamic typing &mdash; every name needs an annotation at first binding</li>
     <li>*args, **kwargs, default arguments</li>
     <li>lambdas, nested / closure functions</li>
     <li>comprehensions (list / dict / set / generator)</li>
     <li>metaclasses, __new__, __slots__, descriptors</li>
-    <li>sets, tuples, bytes, bytearray</li>
+    <li>sets</li>
     <li>context managers (with)</li>
     <li>eval, exec, getattr / setattr / hasattr</li>
     <li>monkey-patching &mdash; classes are closed after definition</li>
-    <li>most of the standard library</li>
   </ul>
 </section>
 
