@@ -94,12 +94,15 @@ type MultiAssignStmt struct {
 func (s *MultiAssignStmt) GetPos() Pos { return s.Pos }
 func (s *MultiAssignStmt) stmtNode()   {}
 
-// AttrAssignStmt represents attribute assignment: `obj.attr = value`.
+// AttrAssignStmt represents attribute assignment: `obj.attr = value` or
+// `obj.attr: T = value`. TypeAnn is set only for the annotated form, used
+// inside `__init__` to declare a field's type instead of inferring it.
 type AttrAssignStmt struct {
-	Pos    Pos
-	Object Expr
-	Attr   string
-	Value  Expr
+	Pos     Pos
+	Object  Expr
+	Attr    string
+	TypeAnn *TypeAnnotation
+	Value   Expr
 }
 
 func (s *AttrAssignStmt) GetPos() Pos { return s.Pos }

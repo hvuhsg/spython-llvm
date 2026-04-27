@@ -114,20 +114,44 @@ func (p *Parser) parseStatement() (Stmt, error) {
 		}, nil
 	}
 
-	// Check for attribute assignment: obj.attr = value
-	if attr, ok := expr.(*AttrExpr); ok && p.peek().Type == lexer.TOKEN_ASSIGN {
-		p.advance() // consume =
-		value, err := p.parseExpr(0)
-		if err != nil {
-			return nil, err
+	// Check for attribute assignment: obj.attr = value or obj.attr: T = value
+	if attr, ok := expr.(*AttrExpr); ok {
+		if p.peek().Type == lexer.TOKEN_ASSIGN {
+			p.advance() // consume =
+			value, err := p.parseExpr(0)
+			if err != nil {
+				return nil, err
+			}
+			p.consumeNewline()
+			return &AttrAssignStmt{
+				Pos:    attr.Pos,
+				Object: attr.Object,
+				Attr:   attr.Attr,
+				Value:  value,
+			}, nil
 		}
-		p.consumeNewline()
-		return &AttrAssignStmt{
-			Pos:    attr.Pos,
-			Object: attr.Object,
-			Attr:   attr.Attr,
-			Value:  value,
-		}, nil
+		if p.peek().Type == lexer.TOKEN_COLON {
+			p.advance() // consume :
+			typeAnn, err := p.parseTypeAnnotation()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expect(lexer.TOKEN_ASSIGN); err != nil {
+				return nil, err
+			}
+			value, err := p.parseExpr(0)
+			if err != nil {
+				return nil, err
+			}
+			p.consumeNewline()
+			return &AttrAssignStmt{
+				Pos:     attr.Pos,
+				Object:  attr.Object,
+				Attr:    attr.Attr,
+				TypeAnn: typeAnn,
+				Value:   value,
+			}, nil
+		}
 	}
 
 	// Check for reassignment: ident = expr (without type annotation)
