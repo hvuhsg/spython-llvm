@@ -165,11 +165,10 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 	// Emit class struct types, vtable types, and compute method slots.
 	g.emitClassTypes()
 
-	// Emit globals for non-entry modules' top-level typed assignments
+	// Emit globals for every module's top-level typed assignments. The entry
+	// module needs them too so functions defined in it can read module-scope
+	// names: without globals, those reads would dangle past main()'s stack.
 	for _, m := range modules {
-		if m.IsEntry {
-			continue
-		}
 		if err := g.emitModuleGlobals(m); err != nil {
 			return "", err
 		}
@@ -276,20 +275,18 @@ func (g *Generator) moduleConstType(as *parser.AssignStmt) types.Type {
 // allocated on the stack.
 func (g *Generator) buildModuleConsts(m *ModuleInput) map[string]varInfo {
 	out := map[string]varInfo{}
-	if !m.IsEntry {
-		for _, stmt := range m.Program.Stmts {
-			as, ok := stmt.(*parser.AssignStmt)
-			if !ok {
-				continue
-			}
-			t := g.moduleConstType(as)
-			if t == nil {
-				continue
-			}
-			out[as.Name] = varInfo{
-				llvmName: fmt.Sprintf("@spy_%s_%s", m.ID, as.Name),
-				typ:      t,
-			}
+	for _, stmt := range m.Program.Stmts {
+		as, ok := stmt.(*parser.AssignStmt)
+		if !ok {
+			continue
+		}
+		t := g.moduleConstType(as)
+		if t == nil {
+			continue
+		}
+		out[as.Name] = varInfo{
+			llvmName: fmt.Sprintf("@spy_%s_%s", m.ID, as.Name),
+			typ:      t,
 		}
 	}
 	// from-imports resolve to the dep module's global
@@ -322,17 +319,24 @@ func (g *Generator) buildModuleConsts(m *ModuleInput) map[string]varInfo {
 }
 
 // emitModuleGlobals emits LLVM global declarations (zero-initialized) for each
-// top-level constant assignment in a non-entry module.
+// top-level constant assignment in the module. The same name appearing in
+// multiple top-level assignments (e.g., a reassignment in entry-module code)
+// emits a single global.
 func (g *Generator) emitModuleGlobals(m *ModuleInput) error {
+	seen := map[string]bool{}
 	for _, stmt := range m.Program.Stmts {
 		as, ok := stmt.(*parser.AssignStmt)
 		if !ok {
+			continue
+		}
+		if seen[as.Name] {
 			continue
 		}
 		t := g.moduleConstType(as)
 		if t == nil {
 			continue
 		}
+		seen[as.Name] = true
 		llvmT := g.llvmType(t)
 		g.emitLine(fmt.Sprintf("@spy_%s_%s = global %s %s", m.ID, as.Name, llvmT, g.zeroValue(t)))
 	}
@@ -740,6 +744,21 @@ func (g *Generator) emitAssignStmt(s *parser.AssignStmt) error {
 	}
 	valType, _ := s.Value.GetResolvedType().(types.Type)
 
+	// Module-level assignment to an own top-level constant: write to the
+	// LLVM global so functions in this module can read it. Without this,
+	// the value would live in a stack slot inside main() that's invisible
+	// to other functions.
+	if !g.inFunction {
+		if info, ok := g.moduleConsts[s.Name]; ok && info.typ != nil {
+			llvmT := g.llvmType(info.typ)
+			if valType != nil {
+				val = g.castToType(val, valType, info.typ)
+			}
+			g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", llvmT, val, llvmT, info.llvmName))
+			return nil
+		}
+	}
+
 	var varType types.Type
 	if s.TypeAnn != nil {
 		varType = g.resolveTypeAnnotation(s.TypeAnn)
@@ -808,7 +827,13 @@ func (g *Generator) emitMultiAssignStmt(s *parser.MultiAssignStmt) error {
 func (g *Generator) emitAugAssignStmt(s *parser.AugAssignStmt) error {
 	info, ok := g.vars[s.Name]
 	if !ok {
-		return fmt.Errorf("undefined variable: %s", s.Name)
+		// Fall back to module-level globals (e.g., aug-assigning a module
+		// constant from main()).
+		if mc, mcOk := g.moduleConsts[s.Name]; mcOk && mc.typ != nil && !g.inFunction {
+			info = mc
+		} else {
+			return fmt.Errorf("undefined variable: %s", s.Name)
+		}
 	}
 
 	llvmT := g.llvmType(info.typ)
