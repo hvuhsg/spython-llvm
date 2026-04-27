@@ -8,9 +8,10 @@ native binary. Heap memory is managed by the Boehm–Demers–Weiser conservativ
 garbage collector (bdwgc).
 
 The goal is a practical, readable compiler that's small enough to reason about
-end-to-end — not a full CPython replacement. Type annotations are required on
-first binding, dynamic features are intentionally absent, and the runtime is
-a single C file.
+end-to-end — not a full CPython replacement. Types are inferred from the RHS
+at first binding (annotations only required when the RHS is ambiguous, e.g.
+`None` or an empty container), dynamic features are intentionally absent, and
+the runtime is a single C file.
 
 ## Pipeline
 
@@ -84,6 +85,7 @@ go build -o spython ./cmd/spython
 ## What's supported
 
 - **Types:** `int`, `float`, `bool`, `str`, `list[T]`, `dict[K, V]`, `tuple`, `bytes`, `bytearray`, `None`, user-defined classes
+- **Type inference:** local variable types are inferred from the RHS at first binding (`x = 1`, `xs = [1.0, 2.0]`); explicit annotations (`x: int = 1`) are only needed when the RHS is ambiguous (e.g. `xs: list[int] = []`, `parent: Node | None = None`)
 - **Control flow:** `if / elif / else`, `while`, `for … in range`, `for … in list`, `for … in iterator`, `break`, `continue`, `return`
 - **Functions:** `def` with required type annotations, recursion, nested calls, early return, `*args`, `**kwargs`, keyword-only parameters, default arguments, keyword arguments and `*` / `**` unpacking at call sites
 - **Generators:** `def f() -> Iterator[T]` with `yield`, `yield from`, the `next()` builtin, and `StopIteration`
@@ -100,7 +102,7 @@ go build -o spython ./cmd/spython
 - Multiple inheritance, MRO
 - Decorators (`@property`, `@staticmethod`, `@classmethod`, …)
 - `async` / `await`
-- Dynamic typing — every name needs an annotation at first binding
+- Dynamic typing — types are fixed at first binding (inferred from the RHS, or annotated when the RHS is ambiguous like `None` / empty containers); a name's type cannot change afterwards
 - Lambdas, nested / closure functions
 - Comprehensions (list / dict / set / generator)
 - Metaclasses, `__new__`, `__slots__`, descriptors
