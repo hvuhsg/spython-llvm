@@ -1,0 +1,30 @@
+import stat
+
+# Type predicates. Mode values are decimal because spython has no octal
+# literal syntax — equivalent CPython octals are noted in comments.
+print(stat.S_ISDIR(16877))   # 0o040755  directory
+print(stat.S_ISDIR(33188))   # 0o100644  regular file
+print(stat.S_ISREG(33188))   # True
+print(stat.S_ISREG(16877))   # False
+print(stat.S_ISLNK(41983))   # 0o121777  symlink + sticky-ish bits
+print(stat.S_ISFIFO(4096))   # 0o010000  FIFO
+
+# S_IFMT / S_IMODE extraction.
+print(stat.S_IFMT(33279))    # 0o100777 -> 32768 (S_IFREG)
+print(stat.S_IMODE(33279))   # 0o100777 -> 511 (0o777)
+
+# filemode strings, cross-checked against CPython's stat.filemode.
+print(stat.filemode(16877))  # 0o040755 -> "drwxr-xr-x"
+print(stat.filemode(33188))  # 0o100644 -> "-rw-r--r--"
+print(stat.filemode(33261))  # 0o100755 -> "-rwxr-xr-x"
+print(stat.filemode(41983))  # 0o121777 -> "lrwxrwxrwt"
+print(stat.filemode(34208))  # 0o102640 -> "-rw-r-S---"  setgid w/o exec on group
+print(stat.filemode(36855))  # 0o107767 -> "-rwsrwSrwt"  setuid + setgid + sticky
+print(stat.filemode(4096))   # 0o010000 -> "p---------"
+
+# A few constants spot-checked against CPython.
+print(stat.S_IRUSR)  # 256
+print(stat.S_IWUSR)  # 128
+print(stat.S_IXUSR)  # 64
+print(stat.ST_MODE)
+print(stat.ST_SIZE)

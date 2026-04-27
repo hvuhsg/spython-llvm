@@ -1,0 +1,53 @@
+import colorsys
+
+# rgb_to_yiq / yiq_to_rgb roundtrip on a known color (red-ish).
+y, i, q = colorsys.rgb_to_yiq(0.5, 0.25, 0.75)
+print(y)
+print(i)
+print(q)
+
+r, g, b = colorsys.yiq_to_rgb(y, i, q)
+print(r)
+print(g)
+print(b)
+
+# Pure red: HLS = (0, 0.5, 1.0).
+h, l, s = colorsys.rgb_to_hls(1.0, 0.0, 0.0)
+print(h)
+print(l)
+print(s)
+
+# Pure green: HLS = (1/3, 0.5, 1.0).
+h, l, s = colorsys.rgb_to_hls(0.0, 1.0, 0.0)
+print(h)
+print(l)
+print(s)
+
+# hls_to_rgb roundtrip back to red.
+r, g, b = colorsys.hls_to_rgb(0.0, 0.5, 1.0)
+print(r)
+print(g)
+print(b)
+
+# Pure red HSV.
+h, s, v = colorsys.rgb_to_hsv(1.0, 0.0, 0.0)
+print(h)
+print(s)
+print(v)
+
+# Roundtrip.
+r, g, b = colorsys.hsv_to_rgb(h, s, v)
+print(r)
+print(g)
+print(b)
+
+# Grayscale: hue == 0, sat == 0, value == lightness == 0.4.
+h, l, s = colorsys.rgb_to_hls(0.4, 0.4, 0.4)
+print(h)
+print(l)
+print(s)
+
+h, s, v = colorsys.rgb_to_hsv(0.4, 0.4, 0.4)
+print(h)
+print(s)
+print(v)

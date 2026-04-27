@@ -107,3 +107,64 @@ def listdir(path: str) -> list[str]:
         out.append(_listdir_entry(i))
         i = i + 1
     return out
+
+# ----- Constants -----
+
+# CPython exposes these as plain attributes; we do the same. POSIX-only;
+# the values are the same on Linux and Darwin.
+sep: str = "/"
+linesep: str = "\n"
+pathsep: str = ":"
+name: str = "posix"
+curdir: str = "."
+pardir: str = ".."
+extsep: str = "."
+devnull: str = "/dev/null"
+
+# access() mode bits — POSIX X/Open spec, identical across Linux and BSD.
+F_OK: int = 0
+X_OK: int = 1
+W_OK: int = 2
+R_OK: int = 4
+
+# open() flags. Values are POSIX-portable but on a few systems (Linux vs.
+# Darwin) the higher bits diverge — these match Darwin/macOS, the spython
+# build host.
+O_RDONLY: int = 0
+O_WRONLY: int = 1
+O_RDWR: int = 2
+O_CREAT: int = 512     # 0o1000 on Linux; 0o0001000 on macOS
+O_EXCL: int = 2048
+O_TRUNC: int = 1024
+O_APPEND: int = 8
+O_NONBLOCK: int = 4
+
+# ----- Environment / process -----
+
+@extern
+def _setenv(name: str, value: str) -> int: ...
+
+@extern
+def _unsetenv(name: str) -> int: ...
+
+@extern
+def umask(mask: int) -> int: ...
+
+@extern
+def cpu_count() -> int: ...
+
+# CPython: os.access(path, mode) -> bool. Mode is F_OK / R_OK / W_OK / X_OK
+# (or a bitwise-OR thereof). Returns True iff the calling process has the
+# requested rights; never raises — failure is a False return.
+@extern
+def access(path: str, mode: int) -> bool: ...
+
+def setenv(key: str, value: str) -> None:
+    rc: int = _setenv(key, value)
+    if rc < 0:
+        _raise_os_error(key)
+
+def unsetenv(key: str) -> None:
+    rc: int = _unsetenv(key)
+    if rc < 0:
+        _raise_os_error(key)

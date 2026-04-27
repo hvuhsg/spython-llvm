@@ -1,5 +1,10 @@
 # stdlib/hashlib.spy — cryptographic hash functions. Each call hashes the
 # input bytes and returns the digest as lowercase hexadecimal text.
+#
+# CPython's hashlib exposes these as constructors (`hashlib.sha256()`) that
+# return a hash object with .update / .digest / .hexdigest. spython's
+# stateless one-shot form returns the hex digest directly, so equivalence
+# with CPython is `h.hexdigest()` for `h = hashlib.<name>(data)`.
 
 @extern
 def md5(data: bytes) -> str: ...
@@ -8,4 +13,13 @@ def md5(data: bytes) -> str: ...
 def sha1(data: bytes) -> str: ...
 
 @extern
+def sha224(data: bytes) -> str: ...
+
+@extern
 def sha256(data: bytes) -> str: ...
+
+@extern
+def sha384(data: bytes) -> str: ...
+
+@extern
+def sha512(data: bytes) -> str: ...

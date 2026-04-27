@@ -73,6 +73,8 @@ func (p *Parser) parseStatement() (Stmt, error) {
 		return p.parseTryStmt()
 	case lexer.TOKEN_RAISE:
 		return p.parseRaiseStmt()
+	case lexer.TOKEN_YIELD:
+		return p.parseYieldStmt()
 	}
 
 	// Could be assignment (x: type = expr) or expression statement
@@ -437,13 +439,64 @@ func (p *Parser) parsePostfix() (Expr, error) {
 			// Function call
 			p.advance()
 			args := []Expr{}
+			argStar := []bool{}
+			anyStar := false
+			kwargs := []KwArg{}
 			if p.peek().Type != lexer.TOKEN_RPAREN {
 				for {
-					arg, err := p.parseExpr(0)
-					if err != nil {
-						return nil, err
+					tk := p.peek()
+					switch tk.Type {
+					case lexer.TOKEN_DSTAR:
+						p.advance()
+						val, err := p.parseExpr(0)
+						if err != nil {
+							return nil, err
+						}
+						kwargs = append(kwargs, KwArg{Pos: p.makePos(tk), Value: val, IsDStar: true})
+					case lexer.TOKEN_STAR:
+						if len(kwargs) > 0 {
+							return nil, fmt.Errorf("%d:%d: positional argument follows keyword argument", tk.Line, tk.Col)
+						}
+						p.advance()
+						val, err := p.parseExpr(0)
+						if err != nil {
+							return nil, err
+						}
+						args = append(args, val)
+						argStar = append(argStar, true)
+						anyStar = true
+					case lexer.TOKEN_IDENT:
+						// Look ahead for `name = expr` (kwarg) vs bare expr.
+						if p.peekN(1).Type == lexer.TOKEN_ASSIGN {
+							nameTok := p.advance()
+							p.advance() // consume `=`
+							val, err := p.parseExpr(0)
+							if err != nil {
+								return nil, err
+							}
+							kwargs = append(kwargs, KwArg{Pos: p.makePos(nameTok), Name: nameTok.Literal, Value: val})
+						} else {
+							if len(kwargs) > 0 {
+								return nil, fmt.Errorf("%d:%d: positional argument follows keyword argument", tk.Line, tk.Col)
+							}
+							val, err := p.parseExpr(0)
+							if err != nil {
+								return nil, err
+							}
+							args = append(args, val)
+							argStar = append(argStar, false)
+						}
+					default:
+						if len(kwargs) > 0 {
+							return nil, fmt.Errorf("%d:%d: positional argument follows keyword argument", tk.Line, tk.Col)
+						}
+						val, err := p.parseExpr(0)
+						if err != nil {
+							return nil, err
+						}
+						args = append(args, val)
+						argStar = append(argStar, false)
 					}
-					args = append(args, arg)
 					if p.peek().Type != lexer.TOKEN_COMMA {
 						break
 					}
@@ -458,15 +511,20 @@ func (p *Parser) parsePostfix() (Expr, error) {
 			}
 			// Recognize `super()` (zero-arg) as the SuperExpr sentinel so it
 			// can appear as the receiver of `.method(...)` in a class body.
-			if ident, ok := expr.(*IdentExpr); ok && ident.Name == "super" && len(args) == 0 {
+			if ident, ok := expr.(*IdentExpr); ok && ident.Name == "super" && len(args) == 0 && len(kwargs) == 0 {
 				expr = &SuperExpr{Pos: ident.Pos}
 				break
 			}
-			expr = &CallExpr{
-				Pos:  expr.GetPos(),
-				Func: expr,
-				Args: args,
+			callExpr := &CallExpr{
+				Pos:    expr.GetPos(),
+				Func:   expr,
+				Args:   args,
+				Kwargs: kwargs,
 			}
+			if anyStar {
+				callExpr.ArgStar = argStar
+			}
+			expr = callExpr
 		case lexer.TOKEN_LBRACK:
 			// Index
 			p.advance()
@@ -784,8 +842,36 @@ func (p *Parser) parseFuncDef() (Stmt, error) {
 	}
 
 	var params []FuncParam
+	sawVarArgs := false
+	sawKwargs := false
+	seenPositionalDefault := false
 	if p.peek().Type != lexer.TOKEN_RPAREN {
 		for {
+			leadTok := p.peek()
+			kind := ParamPositional
+			switch leadTok.Type {
+			case lexer.TOKEN_DSTAR:
+				if sawKwargs {
+					return nil, fmt.Errorf("%d:%d: only one **kwargs parameter is allowed", leadTok.Line, leadTok.Col)
+				}
+				p.advance()
+				kind = ParamKwargs
+				sawKwargs = true
+			case lexer.TOKEN_STAR:
+				if sawVarArgs {
+					return nil, fmt.Errorf("%d:%d: only one *args parameter is allowed", leadTok.Line, leadTok.Col)
+				}
+				if sawKwargs {
+					return nil, fmt.Errorf("%d:%d: *args cannot follow **kwargs", leadTok.Line, leadTok.Col)
+				}
+				p.advance()
+				kind = ParamVarArgs
+				sawVarArgs = true
+			default:
+				if sawKwargs {
+					return nil, fmt.Errorf("%d:%d: parameter cannot follow **kwargs", leadTok.Line, leadTok.Col)
+				}
+			}
 			pNameTok := p.peek()
 			if pNameTok.Type != lexer.TOKEN_IDENT {
 				return nil, fmt.Errorf("%d:%d: expected parameter name, got %s", pNameTok.Line, pNameTok.Col, pNameTok.Type)
@@ -802,7 +888,26 @@ func (p *Parser) parseFuncDef() (Stmt, error) {
 				}
 				typeAnn = ann
 			}
-			params = append(params, FuncParam{Name: pNameTok.Literal, TypeAnn: typeAnn})
+			var defaultExpr Expr
+			if p.peek().Type == lexer.TOKEN_ASSIGN {
+				if kind == ParamVarArgs || kind == ParamKwargs {
+					return nil, fmt.Errorf("%d:%d: *args and **kwargs parameters cannot have default values", leadTok.Line, leadTok.Col)
+				}
+				p.advance()
+				expr, err := p.parseExpr(0)
+				if err != nil {
+					return nil, err
+				}
+				defaultExpr = expr
+			}
+			if kind == ParamPositional && !sawVarArgs {
+				if defaultExpr != nil {
+					seenPositionalDefault = true
+				} else if seenPositionalDefault {
+					return nil, fmt.Errorf("%d:%d: non-default parameter %q follows default parameter", pNameTok.Line, pNameTok.Col, pNameTok.Literal)
+				}
+			}
+			params = append(params, FuncParam{Name: pNameTok.Literal, TypeAnn: typeAnn, Kind: kind, Default: defaultExpr})
 			if p.peek().Type != lexer.TOKEN_COMMA {
 				break
 			}
@@ -854,11 +959,12 @@ func (p *Parser) parseFuncDef() (Stmt, error) {
 	}
 
 	return &FuncDef{
-		Pos:        p.makePos(tok),
-		Name:       nameTok.Literal,
-		Params:     params,
-		ReturnType: retType,
-		Body:       body,
+		Pos:         p.makePos(tok),
+		Name:        nameTok.Literal,
+		Params:      params,
+		ReturnType:  retType,
+		Body:        body,
+		IsGenerator: FuncContainsYield(body),
 	}, nil
 }
 
@@ -1072,6 +1178,24 @@ func (p *Parser) parseRaiseStmt() (Stmt, error) {
 	}
 	p.consumeNewline()
 	return &RaiseStmt{Pos: p.makePos(tok), Value: value}, nil
+}
+
+func (p *Parser) parseYieldStmt() (Stmt, error) {
+	tok := p.advance() // consume 'yield'
+	isFrom := false
+	if p.peek().Type == lexer.TOKEN_FROM {
+		p.advance()
+		isFrom = true
+	}
+	if p.peek().Type == lexer.TOKEN_NEWLINE || p.peek().Type == lexer.TOKEN_EOF || p.peek().Type == lexer.TOKEN_DEDENT {
+		return nil, fmt.Errorf("%d:%d: bare `yield` is not supported in v1; provide a value", tok.Line, tok.Col)
+	}
+	value, err := p.parseExpr(0)
+	if err != nil {
+		return nil, err
+	}
+	p.consumeNewline()
+	return &YieldStmt{Pos: p.makePos(tok), Value: value, IsFrom: isFrom}, nil
 }
 
 func (p *Parser) parseReturnStmt() (Stmt, error) {

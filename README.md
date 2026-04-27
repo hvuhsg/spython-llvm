@@ -84,13 +84,14 @@ go build -o spython ./cmd/spython
 ## What's supported
 
 - **Types:** `int`, `float`, `bool`, `str`, `list[T]`, `dict[K, V]`, `tuple`, `bytes`, `bytearray`, `None`, user-defined classes
-- **Control flow:** `if / elif / else`, `while`, `for … in range`, `for … in list`, `break`, `continue`, `return`
-- **Functions:** `def` with required type annotations, recursion, nested calls, early return
+- **Control flow:** `if / elif / else`, `while`, `for … in range`, `for … in list`, `for … in iterator`, `break`, `continue`, `return`
+- **Functions:** `def` with required type annotations, recursion, nested calls, early return, `*args`, `**kwargs`, keyword-only parameters, default arguments, keyword arguments and `*` / `**` unpacking at call sites
+- **Generators:** `def f() -> Iterator[T]` with `yield`, `yield from`, the `next()` builtin, and `StopIteration`
 - **Classes:** single inheritance, virtual dispatch (vtables), `super()`, `isinstance()`, field inference from `__init__`, implicit upcasting
 - **Dunder methods:** `__init__`, `__str__`, `__repr__`, `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, `__ge__`, `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`, `__mod__`, `__neg__`, `__pow__`
 - **Exceptions:** `raise`, `try / except / finally`, exception subclassing, propagation across calls; built-in hierarchy (`Exception`, `ArithmeticError`, `ZeroDivisionError`, `ValueError`, `TypeError`, `OSError`, …) auto-injected as a synthetic `builtins` module
 - **Imports:** `import module`, `import module as alias`, `from module import name`, multi-file projects
-- **Stdlib:** `math`, `random`, `time`, `io`, `os`, `os.path`, `sys`, `hashlib`, `binascii`, `base64`, `struct`, `socket` — implemented as `.spy` shims over sibling C files (FFI via `// spython-link:` directives)
+- **Stdlib:** `math`, `random`, `time`, `io`, `os`, `os.path`, `sys`, `hashlib`, `binascii`, `base64`, `struct`, `socket`, `itertools`, `keyword`, `errno`, `stat`, `colorsys` — implemented as `.spy` shims over sibling C files (FFI via `// spython-link:` directives) for the C-backed ones, pure `.spy` for the rest
 - **Operators:** arithmetic (`+ - * / // % **`), comparison (`== != < > <= >=`), logical (`and`, `or`, `not`), bitwise (`& | ^ ~ << >>`), augmented assign (`+=`, `-=`, …)
 - **Runtime:** `print`, `range`, `len`, `int()`, `float()`, `str()`, `bool()`, `isinstance()`, `sys.argv`, conservative GC, list/str/map indexing
 
@@ -98,9 +99,8 @@ go build -o spython ./cmd/spython
 
 - Multiple inheritance, MRO
 - Decorators (`@property`, `@staticmethod`, `@classmethod`, …)
-- Generators, `yield`, `async` / `await`
+- `async` / `await`
 - Dynamic typing — every name needs an annotation at first binding
-- `*args`, `**kwargs`, default arguments
 - Lambdas, nested / closure functions
 - Comprehensions (list / dict / set / generator)
 - Metaclasses, `__new__`, `__slots__`, descriptors

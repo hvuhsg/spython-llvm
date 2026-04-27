@@ -8,3 +8,38 @@ t1 = time.monotonic()
 delta: float = t1 - t0
 print(delta >= 0.01)
 print(delta < 2.0)
+
+# *_ns variants. Each ns reading should be a positive integer that scales
+# back to within a tiny tolerance of the float reading. We compare cheaply
+# via inequality so the test is timing-stable.
+ns_t: int = time.time_ns()
+ns_m: int = time.monotonic_ns()
+ns_p: int = time.perf_counter_ns()
+ns_pt: int = time.process_time_ns()
+
+print(ns_t > 0)
+print(ns_m > 0)
+print(ns_p > 0)
+print(ns_pt >= 0)
+
+# perf_counter and monotonic share the source clock on POSIX, so a delta
+# across them must stay within a few ms of zero (any larger gap means the
+# wrappers diverged).
+p0: float = time.perf_counter()
+m0: float = time.monotonic()
+gap: float = p0 - m0
+if gap < 0.0:
+    gap = -gap
+print(gap < 0.1)
+
+# process_time should advance under a tight CPU loop. Use a small loop so
+# the test stays fast on slow machines.
+pt0: float = time.process_time()
+total: int = 0
+i: int = 0
+while i < 200000:
+    total = total + i
+    i = i + 1
+pt1: float = time.process_time()
+print(pt1 >= pt0)
+print(total > 0)

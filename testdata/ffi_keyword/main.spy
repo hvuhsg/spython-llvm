@@ -1,0 +1,20 @@
+import keyword
+
+# Membership tests.
+print(keyword.iskeyword("if"))      # True
+print(keyword.iskeyword("def"))     # True
+print(keyword.iskeyword("None"))    # True
+print(keyword.iskeyword("yield"))   # True
+print(keyword.iskeyword("match"))   # False — soft keyword, not in kwlist
+print(keyword.iskeyword("foo"))     # False
+print(keyword.iskeyword(""))        # False
+
+# Lengths — CPython 3.13 has 35 hard keywords and 4 soft.
+print(len(keyword.kwlist))
+print(len(keyword.softkwlist))
+
+# Spot-check first / last entries.
+print(keyword.kwlist[0])             # "False"
+print(keyword.kwlist[len(keyword.kwlist) - 1])  # "yield"
+print(keyword.softkwlist[0])        # "_"
+print(keyword.softkwlist[len(keyword.softkwlist) - 1])  # "type"

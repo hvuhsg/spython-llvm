@@ -1,0 +1,13 @@
+def show(**opts: int) -> None:
+    print(len(opts))
+
+show()
+show(x=1)
+show(a=10, b=20, c=30)
+
+def labeled(prefix: str, **vals: int) -> int:
+    print(prefix, len(vals))
+    return len(vals)
+
+n: int = labeled("a", x=1, y=2, z=3)
+print(n)

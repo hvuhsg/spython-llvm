@@ -1,0 +1,15 @@
+def step(start: int, by: int, count: int) -> Iterator[int]:
+    i: int = 0
+    cur: int = start
+    while i < count:
+        yield cur
+        cur = cur + by
+        i = i + 1
+
+for x in step(10, 3, 4):
+    print(x)
+
+print("---")
+
+for y in step(100, -10, 3):
+    print(y)

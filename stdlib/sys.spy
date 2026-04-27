@@ -1,7 +1,6 @@
-# stdlib/sys.spy — process-level primitives: argv, exit, platform, stderr.
-#
-# argv() returns the same list CPython exposes as sys.argv: argv[0] is the
-# program name, argv[1:] are the user-supplied arguments.
+# stdlib/sys.spy — process-level primitives. Surface tracks CPython's
+# `sys` module: `argv`, `platform`, `byteorder`, `maxsize`, `version`,
+# `executable` are attributes; `exit` and the writers stay as functions.
 
 @extern
 def _argc() -> int: ...
@@ -13,7 +12,19 @@ def _argv_at(i: int) -> str: ...
 def exit(code: int) -> None: ...
 
 @extern
-def platform() -> str: ...
+def _platform() -> str: ...
+
+@extern
+def _byteorder() -> str: ...
+
+@extern
+def _maxsize() -> int: ...
+
+@extern
+def _version() -> str: ...
+
+@extern
+def _executable() -> str: ...
 
 # Write directly to stdout/stderr without an implicit newline. Useful when
 # building formatted output where `print`'s newline behavior gets in the way.
@@ -23,7 +34,7 @@ def stdout_write(s: str) -> None: ...
 @extern
 def stderr_write(s: str) -> None: ...
 
-def argv() -> list[str]:
+def _build_argv() -> list[str]:
     n: int = _argc()
     out: list[str] = []
     i: int = 0
@@ -31,3 +42,12 @@ def argv() -> list[str]:
         out.append(_argv_at(i))
         i = i + 1
     return out
+
+# CPython exposes argv as a mutable list[str] attribute. We build it once at
+# module-init time; user mutations stick because lists are reference types.
+argv: list[str] = _build_argv()
+platform: str = _platform()
+byteorder: str = _byteorder()
+maxsize: int = _maxsize()
+version: str = _version()
+executable: str = _executable()

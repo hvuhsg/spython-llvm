@@ -42,6 +42,7 @@ const (
 	TOKEN_EXCEPT
 	TOKEN_FINALLY
 	TOKEN_RAISE
+	TOKEN_YIELD
 
 	// Operators
 	TOKEN_PLUS     // +
@@ -127,6 +128,7 @@ var tokenNames = map[TokenType]string{
 	TOKEN_EXCEPT:   "except",
 	TOKEN_FINALLY:  "finally",
 	TOKEN_RAISE:    "raise",
+	TOKEN_YIELD:    "yield",
 	TOKEN_PLUS:     "+",
 	TOKEN_MINUS:    "-",
 	TOKEN_STAR:     "*",
@@ -206,6 +208,7 @@ var keywords = map[string]TokenType{
 	"except":   TOKEN_EXCEPT,
 	"finally":  TOKEN_FINALLY,
 	"raise":    TOKEN_RAISE,
+	"yield":    TOKEN_YIELD,
 }
 
 func LookupKeyword(ident string) TokenType {

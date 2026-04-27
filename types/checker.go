@@ -9,6 +9,12 @@ import (
 type Checker struct {
 	Env               *Env
 	currentReturnType Type
+	// currentYieldType is the element type T of the enclosing generator
+	// function's declared `Iterator[T]` return. Non-nil only inside a
+	// generator body; populated by checkFuncDef and consulted by
+	// checkYieldStmt and checkReturnStmt (return-with-value is rejected
+	// in generators).
+	currentYieldType Type
 	ModuleID          string // ID of the module being checked; set by loader
 	imports           map[string]*ModuleType
 
@@ -240,15 +246,60 @@ func (c *Checker) Exports(program *parser.Program) map[string]Type {
 
 func (c *Checker) registerFuncSignature(s *parser.FuncDef) error {
 	paramTypes := []Type{}
+	paramNames := []string{}
+	paramDefaults := []parser.Expr{}
+	kwOnlyStart := -1
+	var varArgsElem Type
+	varArgsName := ""
+	var kwargsElem Type
+	kwargsName := ""
+
 	for _, p := range s.Params {
 		if p.TypeAnn == nil {
+			// `self` is allowed unannotated; for *args/**kwargs we still
+			// enforce annotations.
+			if p.Kind != parser.ParamPositional {
+				return fmt.Errorf("%d:%d: %s parameter requires a type annotation",
+					s.Pos.Line, s.Pos.Col, p.Name)
+			}
 			return fmt.Errorf("%d:%d: parameter %s requires a type annotation", s.Pos.Line, s.Pos.Col, p.Name)
 		}
 		pt := c.resolveTypeAnnotation(p.TypeAnn)
 		if pt == nil {
 			return fmt.Errorf("%d:%d: unknown parameter type: %s", s.Pos.Line, s.Pos.Col, p.TypeAnn.Name)
 		}
-		paramTypes = append(paramTypes, pt)
+		switch p.Kind {
+		case parser.ParamVarArgs:
+			varArgsElem = pt
+			varArgsName = p.Name
+			if kwOnlyStart == -1 {
+				kwOnlyStart = len(paramTypes)
+			}
+		case parser.ParamKwargs:
+			kwargsElem = pt
+			kwargsName = p.Name
+		default:
+			if p.Default != nil {
+				prevHint := c.typeHint
+				c.typeHint = pt
+				defaultType, err := c.checkExpr(p.Default)
+				c.typeHint = prevHint
+				if err != nil {
+					return fmt.Errorf("%d:%d: parameter %s: default value: %w",
+						s.Pos.Line, s.Pos.Col, p.Name, err)
+				}
+				if !IsAssignable(defaultType, pt) {
+					return fmt.Errorf("%d:%d: parameter %s: default value of type %s is not assignable to %s",
+						s.Pos.Line, s.Pos.Col, p.Name, defaultType, pt)
+				}
+			}
+			paramTypes = append(paramTypes, pt)
+			paramNames = append(paramNames, p.Name)
+			paramDefaults = append(paramDefaults, p.Default)
+		}
+	}
+	if kwOnlyStart == -1 {
+		kwOnlyStart = len(paramTypes)
 	}
 
 	retType := Type(&NoneType{})
@@ -259,7 +310,28 @@ func (c *Checker) registerFuncSignature(s *parser.FuncDef) error {
 		}
 	}
 
+	if s.IsGenerator {
+		if _, ok := retType.(*IteratorType); !ok {
+			return fmt.Errorf("%d:%d: generator function %s must declare return type Iterator[T]",
+				s.Pos.Line, s.Pos.Col, s.Name)
+		}
+		if s.Extern {
+			return fmt.Errorf("%d:%d: @extern function %s cannot be a generator",
+				s.Pos.Line, s.Pos.Col, s.Name)
+		}
+	}
+
 	if s.Extern {
+		if varArgsElem != nil || kwargsElem != nil {
+			return fmt.Errorf("%d:%d: @extern %s: *args and **kwargs are not supported on @extern functions",
+				s.Pos.Line, s.Pos.Col, s.Name)
+		}
+		for _, p := range s.Params {
+			if p.Default != nil {
+				return fmt.Errorf("%d:%d: @extern %s: parameter %s cannot have a default value",
+					s.Pos.Line, s.Pos.Col, s.Name, p.Name)
+			}
+		}
 		for i, pt := range paramTypes {
 			if !isFFIMarshallable(pt) {
 				return fmt.Errorf("%d:%d: @extern %s: parameter %s has non-marshallable type %s",
@@ -273,10 +345,17 @@ func (c *Checker) registerFuncSignature(s *parser.FuncDef) error {
 	}
 
 	funcType := &FuncType{
-		Params:       paramTypes,
-		Return:       retType,
-		DefinedIn:    c.ModuleID,
-		ExternSymbol: s.ExternSymbol,
+		Params:        paramTypes,
+		ParamNames:    paramNames,
+		ParamDefaults: paramDefaults,
+		KwOnlyStart:   kwOnlyStart,
+		VarArgsElem:   varArgsElem,
+		VarArgsName:   varArgsName,
+		KwargsElem:    kwargsElem,
+		KwargsName:    kwargsName,
+		Return:        retType,
+		DefinedIn:     c.ModuleID,
+		ExternSymbol:  s.ExternSymbol,
 	}
 	c.Env.Define(s.Name, funcType)
 	return nil
@@ -362,6 +441,17 @@ func (c *Checker) registerClassMethods(s *parser.ClassDef) error {
 		}
 		// Resolve method signature (self-less: self is implied).
 		paramTypes := []Type{}
+		paramNames := []string{}
+		paramDefaults := []parser.Expr{}
+		kwOnlyStart := -1
+		var varArgsElem Type
+		varArgsName := ""
+		var kwargsElem Type
+		kwargsName := ""
+		if m.Params[0].Default != nil {
+			return fmt.Errorf("%d:%d: method %s.%s: 'self' cannot have a default value",
+				m.Pos.Line, m.Pos.Col, s.Name, m.Name)
+		}
 		for i := 1; i < len(m.Params); i++ {
 			p := m.Params[i]
 			if p.TypeAnn == nil {
@@ -373,7 +463,38 @@ func (c *Checker) registerClassMethods(s *parser.ClassDef) error {
 				return fmt.Errorf("%d:%d: method %s.%s: unknown parameter type %s",
 					m.Pos.Line, m.Pos.Col, s.Name, m.Name, p.TypeAnn.Name)
 			}
-			paramTypes = append(paramTypes, pt)
+			switch p.Kind {
+			case parser.ParamVarArgs:
+				varArgsElem = pt
+				varArgsName = p.Name
+				if kwOnlyStart == -1 {
+					kwOnlyStart = len(paramTypes)
+				}
+			case parser.ParamKwargs:
+				kwargsElem = pt
+				kwargsName = p.Name
+			default:
+				if p.Default != nil {
+					prevHint := c.typeHint
+					c.typeHint = pt
+					defaultType, err := c.checkExpr(p.Default)
+					c.typeHint = prevHint
+					if err != nil {
+						return fmt.Errorf("%d:%d: method %s.%s: parameter %s: default value: %w",
+							m.Pos.Line, m.Pos.Col, s.Name, m.Name, p.Name, err)
+					}
+					if !IsAssignable(defaultType, pt) {
+						return fmt.Errorf("%d:%d: method %s.%s: parameter %s: default value of type %s is not assignable to %s",
+							m.Pos.Line, m.Pos.Col, s.Name, m.Name, p.Name, defaultType, pt)
+					}
+				}
+				paramTypes = append(paramTypes, pt)
+				paramNames = append(paramNames, p.Name)
+				paramDefaults = append(paramDefaults, p.Default)
+			}
+		}
+		if kwOnlyStart == -1 {
+			kwOnlyStart = len(paramTypes)
 		}
 		retType := Type(&NoneType{})
 		if m.ReturnType != nil {
@@ -383,7 +504,18 @@ func (c *Checker) registerClassMethods(s *parser.ClassDef) error {
 					m.Pos.Line, m.Pos.Col, s.Name, m.Name, m.ReturnType.Name)
 			}
 		}
-		sig := &FuncType{Params: paramTypes, Return: retType, DefinedIn: c.ModuleID}
+		sig := &FuncType{
+			Params:        paramTypes,
+			ParamNames:    paramNames,
+			ParamDefaults: paramDefaults,
+			KwOnlyStart:   kwOnlyStart,
+			VarArgsElem:   varArgsElem,
+			VarArgsName:   varArgsName,
+			KwargsElem:    kwargsElem,
+			KwargsName:    kwargsName,
+			Return:        retType,
+			DefinedIn:     c.ModuleID,
+		}
 
 		// If overriding, enforce strict signature equality with the base.
 		// __init__ is exempt because Python-style constructors commonly vary
@@ -612,9 +744,41 @@ func (c *Checker) checkStmt(stmt parser.Stmt) error {
 		return c.checkTryStmt(s)
 	case *parser.RaiseStmt:
 		return c.checkRaiseStmt(s)
+	case *parser.YieldStmt:
+		return c.checkYieldStmt(s)
 	default:
 		return fmt.Errorf("unknown statement type: %T", stmt)
 	}
+}
+
+func (c *Checker) checkYieldStmt(s *parser.YieldStmt) error {
+	if c.currentYieldType == nil {
+		return fmt.Errorf("%d:%d: 'yield' outside generator function", s.Pos.Line, s.Pos.Col)
+	}
+	if c.finallyDepth > 0 {
+		return fmt.Errorf("%d:%d: 'yield' inside a 'finally' block is not supported in v1",
+			s.Pos.Line, s.Pos.Col)
+	}
+	valType, err := c.checkExpr(s.Value)
+	if err != nil {
+		return err
+	}
+	if s.IsFrom {
+		it, ok := valType.(*IteratorType)
+		if !ok {
+			return fmt.Errorf("%d:%d: 'yield from' requires Iterator[T], got %s", s.Pos.Line, s.Pos.Col, valType)
+		}
+		if !IsAssignable(it.Elem, c.currentYieldType) {
+			return fmt.Errorf("%d:%d: 'yield from' element type mismatch: expected %s, got %s",
+				s.Pos.Line, s.Pos.Col, c.currentYieldType, it.Elem)
+		}
+		return nil
+	}
+	if !IsAssignable(valType, c.currentYieldType) {
+		return fmt.Errorf("%d:%d: yield type mismatch: expected %s, got %s",
+			s.Pos.Line, s.Pos.Col, c.currentYieldType, valType)
+	}
+	return nil
 }
 
 func (c *Checker) checkTryStmt(s *parser.TryStmt) error {
@@ -742,8 +906,18 @@ func (c *Checker) checkMethodBody(ct *ClassType, m *parser.FuncDef) error {
 
 	c.Env.Push()
 	c.Env.Define("self", &InstanceType{Class: ct})
+	posIdx := 0
 	for i := 1; i < len(m.Params); i++ {
-		c.Env.Define(m.Params[i].Name, sig.Params[i-1])
+		p := m.Params[i]
+		switch p.Kind {
+		case parser.ParamVarArgs:
+			c.Env.Define(p.Name, &ListType{Elem: sig.VarArgsElem})
+		case parser.ParamKwargs:
+			c.Env.Define(p.Name, &MapType{Key: &StrType{}, Value: sig.KwargsElem})
+		default:
+			c.Env.Define(p.Name, sig.Params[posIdx])
+			posIdx++
+		}
 	}
 	defer func() {
 		c.Env.Pop()
@@ -972,6 +1146,8 @@ func (c *Checker) checkForStmt(s *parser.ForStmt) error {
 		c.Env.Define(s.VarName, t.Elem)
 	case *StrType:
 		c.Env.Define(s.VarName, &StrType{})
+	case *IteratorType:
+		c.Env.Define(s.VarName, t.Elem)
 	default:
 		return fmt.Errorf("%d:%d: cannot iterate over %s", s.Pos.Line, s.Pos.Col, iterType)
 	}
@@ -993,36 +1169,70 @@ func (c *Checker) checkFuncDef(s *parser.FuncDef) error {
 		return nil
 	}
 
-	// Build function type
-	paramTypes := []Type{}
-	for _, p := range s.Params {
-		if p.TypeAnn == nil {
-			return fmt.Errorf("%d:%d: parameter %s requires a type annotation", s.Pos.Line, s.Pos.Col, p.Name)
-		}
-		pt := c.resolveTypeAnnotation(p.TypeAnn)
-		if pt == nil {
-			return fmt.Errorf("%d:%d: unknown parameter type: %s", s.Pos.Line, s.Pos.Col, p.TypeAnn.Name)
-		}
-		paramTypes = append(paramTypes, pt)
+	// Reuse the FuncType already registered by registerFuncSignature so that
+	// *args/**kwargs metadata stays consistent.
+	existingSym, ok := c.Env.Lookup(s.Name)
+	var funcType *FuncType
+	if ok {
+		funcType, _ = existingSym.(*FuncType)
 	}
-
-	retType := Type(&NoneType{})
-	if s.ReturnType != nil {
-		retType = c.resolveTypeAnnotation(s.ReturnType)
-		if retType == nil {
-			return fmt.Errorf("%d:%d: unknown return type: %s", s.Pos.Line, s.Pos.Col, s.ReturnType.Name)
+	if funcType == nil {
+		// Fall back to recomputing (defensive): build from params, no varargs.
+		paramTypes := []Type{}
+		paramNames := []string{}
+		for _, p := range s.Params {
+			if p.Kind != parser.ParamPositional {
+				return fmt.Errorf("%d:%d: internal: signature for %s not pre-registered", s.Pos.Line, s.Pos.Col, s.Name)
+			}
+			if p.TypeAnn == nil {
+				return fmt.Errorf("%d:%d: parameter %s requires a type annotation", s.Pos.Line, s.Pos.Col, p.Name)
+			}
+			pt := c.resolveTypeAnnotation(p.TypeAnn)
+			if pt == nil {
+				return fmt.Errorf("%d:%d: unknown parameter type: %s", s.Pos.Line, s.Pos.Col, p.TypeAnn.Name)
+			}
+			paramTypes = append(paramTypes, pt)
+			paramNames = append(paramNames, p.Name)
 		}
+		retType := Type(&NoneType{})
+		if s.ReturnType != nil {
+			retType = c.resolveTypeAnnotation(s.ReturnType)
+			if retType == nil {
+				return fmt.Errorf("%d:%d: unknown return type: %s", s.Pos.Line, s.Pos.Col, s.ReturnType.Name)
+			}
+		}
+		funcType = &FuncType{
+			Params:      paramTypes,
+			ParamNames:  paramNames,
+			KwOnlyStart: len(paramTypes),
+			Return:      retType,
+			DefinedIn:   c.ModuleID,
+		}
+		c.Env.Define(s.Name, funcType)
 	}
-
-	funcType := &FuncType{Params: paramTypes, Return: retType, DefinedIn: c.ModuleID}
-	c.Env.Define(s.Name, funcType)
+	retType := funcType.Return
 
 	// Check body in new scope
 	prevReturnType := c.currentReturnType
+	prevYieldType := c.currentYieldType
 	c.currentReturnType = retType
+	if s.IsGenerator {
+		// retType was validated as IteratorType in registerFuncSignature.
+		c.currentYieldType = retType.(*IteratorType).Elem
+	} else {
+		c.currentYieldType = nil
+	}
 	c.Env.Push()
-	for i, p := range s.Params {
-		c.Env.Define(p.Name, paramTypes[i])
+	for _, p := range s.Params {
+		switch p.Kind {
+		case parser.ParamVarArgs:
+			c.Env.Define(p.Name, &ListType{Elem: funcType.VarArgsElem})
+		case parser.ParamKwargs:
+			c.Env.Define(p.Name, &MapType{Key: &StrType{}, Value: funcType.KwargsElem})
+		default:
+			pt := c.resolveTypeAnnotation(p.TypeAnn)
+			c.Env.Define(p.Name, pt)
+		}
 	}
 	for _, stmt := range s.Body {
 		if err := c.checkStmt(stmt); err != nil {
@@ -1031,11 +1241,21 @@ func (c *Checker) checkFuncDef(s *parser.FuncDef) error {
 	}
 	c.Env.Pop()
 	c.currentReturnType = prevReturnType
+	c.currentYieldType = prevYieldType
 
 	return nil
 }
 
 func (c *Checker) checkReturnStmt(s *parser.ReturnStmt) error {
+	// Inside a generator, only bare `return` (equivalent to `raise
+	// StopIteration`) is allowed. `return value` is a v1 restriction
+	// because we don't yet model the StopIteration value channel.
+	if c.currentYieldType != nil {
+		if s.Value != nil {
+			return fmt.Errorf("%d:%d: 'return' with a value is not allowed inside a generator", s.Pos.Line, s.Pos.Col)
+		}
+		return nil
+	}
 	if s.Value == nil {
 		if c.currentReturnType != nil {
 			if _, ok := c.currentReturnType.(*NoneType); !ok {
@@ -1256,6 +1476,12 @@ func (c *Checker) checkUnaryExpr(e *parser.UnaryExpr) (Type, error) {
 func (c *Checker) checkCallExpr(e *parser.CallExpr) (Type, error) {
 	// Handle built-in functions
 	if ident, ok := e.Func.(*parser.IdentExpr); ok {
+		// Builtins (and constructor calls below the switch) don't accept
+		// keyword args or unpacks. Reject them up front for a clearer error.
+		if e.HasVariadicForms() && isBuiltinName(ident.Name) {
+			return nil, fmt.Errorf("%d:%d: %s() does not accept keyword arguments or *args/**kwargs unpacking",
+				e.Pos.Line, e.Pos.Col, ident.Name)
+		}
 		switch ident.Name {
 		case "isinstance":
 			if len(e.Args) != 2 {
@@ -1303,6 +1529,20 @@ func (c *Checker) checkCallExpr(e *parser.CallExpr) (Type, error) {
 				return &IntType{}, nil
 			}
 			return nil, fmt.Errorf("%d:%d: len() not supported for %s", e.Pos.Line, e.Pos.Col, argType)
+
+		case "next":
+			if len(e.Args) != 1 {
+				return nil, fmt.Errorf("%d:%d: next() takes exactly 1 argument", e.Pos.Line, e.Pos.Col)
+			}
+			argType, err := c.checkExpr(e.Args[0])
+			if err != nil {
+				return nil, err
+			}
+			it, ok := argType.(*IteratorType)
+			if !ok {
+				return nil, fmt.Errorf("%d:%d: next() requires Iterator[T], got %s", e.Pos.Line, e.Pos.Col, argType)
+			}
+			return it.Elem, nil
 
 		case "range":
 			if len(e.Args) < 1 || len(e.Args) > 3 {
@@ -1398,23 +1638,12 @@ func (c *Checker) checkCallExpr(e *parser.CallExpr) (Type, error) {
 	// Constructor call: ClassName(args)
 	if ct, ok := funcExpr.(*ClassType); ok {
 		initSig := findInitSig(ct)
-		var params []Type
-		if initSig != nil {
-			params = initSig.Params
+		// Synthesize a no-arg signature when __init__ is absent.
+		if initSig == nil {
+			initSig = &FuncType{}
 		}
-		if len(e.Args) != len(params) {
-			return nil, fmt.Errorf("%d:%d: %s constructor expected %d arguments, got %d",
-				e.Pos.Line, e.Pos.Col, ct.Name, len(params), len(e.Args))
-		}
-		for i, arg := range e.Args {
-			argType, err := c.checkExpr(arg)
-			if err != nil {
-				return nil, err
-			}
-			if !IsAssignable(argType, params[i]) {
-				return nil, fmt.Errorf("%d:%d: %s constructor argument %d: expected %s, got %s",
-					e.Pos.Line, e.Pos.Col, ct.Name, i+1, params[i], argType)
-			}
+		if err := c.matchCallArgs(initSig, e, fmt.Sprintf("%s constructor", ct.Name)); err != nil {
+			return nil, err
 		}
 		return &InstanceType{Class: ct}, nil
 	}
@@ -1424,21 +1653,183 @@ func (c *Checker) checkCallExpr(e *parser.CallExpr) (Type, error) {
 		return nil, fmt.Errorf("%d:%d: %s is not callable", e.Pos.Line, e.Pos.Col, funcExpr)
 	}
 
-	if len(e.Args) != len(funcType.Params) {
-		return nil, fmt.Errorf("%d:%d: expected %d arguments, got %d", e.Pos.Line, e.Pos.Col, len(funcType.Params), len(e.Args))
-	}
-
-	for i, arg := range e.Args {
-		argType, err := c.checkExpr(arg)
-		if err != nil {
-			return nil, err
-		}
-		if !IsAssignable(argType, funcType.Params[i]) {
-			return nil, fmt.Errorf("%d:%d: argument %d: expected %s, got %s", e.Pos.Line, e.Pos.Col, i+1, funcType.Params[i], argType)
-		}
+	if err := c.matchCallArgs(funcType, e, "function"); err != nil {
+		return nil, err
 	}
 
 	return funcType.Return, nil
+}
+
+// paramName returns the name of param i, or a synthetic placeholder when
+// ParamNames isn't populated (legacy FuncType constructions).
+func paramName(ft *FuncType, i int) string {
+	if i < len(ft.ParamNames) {
+		return ft.ParamNames[i]
+	}
+	return fmt.Sprintf("#%d", i+1)
+}
+
+// matchCallArgs validates a CallExpr against a FuncType, supporting positional
+// args, *list unpack, name=value kwargs, and **dict unpack.
+func (c *Checker) matchCallArgs(ft *FuncType, e *parser.CallExpr, who string) error {
+	pos := e.Pos
+	nNamed := len(ft.Params) // total named (positional + kw-only) slots
+	kwOnly := ft.KwOnlyStart
+	// When the signature lacks *args, there can be no kw-only params; this
+	// also normalizes synthetic FuncTypes (e.g. list.append) that don't set
+	// KwOnlyStart explicitly.
+	if ft.VarArgsElem == nil {
+		kwOnly = nNamed
+	}
+	if kwOnly < 0 || kwOnly > nNamed {
+		kwOnly = nNamed
+	}
+
+	filled := make([]bool, nNamed)
+	hasStarUnpack := false
+
+	// Process positional args (and *expr unpacks).
+	posIdx := 0
+	for i, arg := range e.Args {
+		argType, err := c.checkExpr(arg)
+		if err != nil {
+			return err
+		}
+		if e.IsArgStar(i) {
+			lt, ok := argType.(*ListType)
+			if !ok {
+				return fmt.Errorf("%d:%d: %s: *unpack argument must be a list, got %s",
+					pos.Line, pos.Col, who, argType)
+			}
+			if ft.VarArgsElem == nil {
+				return fmt.Errorf("%d:%d: %s does not accept *args; cannot use *unpack",
+					pos.Line, pos.Col, who)
+			}
+			// Mark all named positional slots as "must already be filled" — we
+			// can't statically count what *unpack will produce.
+			if posIdx < kwOnly {
+				return fmt.Errorf("%d:%d: %s: *unpack appears before all named positional parameters are filled",
+					pos.Line, pos.Col, who)
+			}
+			if !IsAssignable(lt.Elem, ft.VarArgsElem) {
+				return fmt.Errorf("%d:%d: %s: *unpack element type %s not assignable to *args type %s",
+					pos.Line, pos.Col, who, lt.Elem, ft.VarArgsElem)
+			}
+			hasStarUnpack = true
+			continue
+		}
+		// Plain positional.
+		if posIdx < kwOnly {
+			if !IsAssignable(argType, ft.Params[posIdx]) {
+				return fmt.Errorf("%d:%d: %s argument %d: expected %s, got %s",
+					pos.Line, pos.Col, who, posIdx+1, ft.Params[posIdx], argType)
+			}
+			filled[posIdx] = true
+			posIdx++
+		} else if ft.VarArgsElem != nil {
+			if !IsAssignable(argType, ft.VarArgsElem) {
+				return fmt.Errorf("%d:%d: %s: *args element expected %s, got %s",
+					pos.Line, pos.Col, who, ft.VarArgsElem, argType)
+			}
+			posIdx++
+		} else {
+			// Either we've spilled past the named positionals (overflow) or
+			// we're hitting a kw-only slot positionally.
+			if posIdx < nNamed {
+				return fmt.Errorf("%d:%d: %s: parameter %s is keyword-only and cannot be passed positionally",
+					pos.Line, pos.Col, who, paramName(ft, posIdx))
+			}
+			return fmt.Errorf("%d:%d: %s: too many positional arguments (expected %d)",
+				pos.Line, pos.Col, who, kwOnly)
+		}
+	}
+
+	// Process keyword args and **expr unpacks.
+	hasDStar := false
+	for _, kw := range e.Kwargs {
+		valType, err := c.checkExpr(kw.Value)
+		if err != nil {
+			return err
+		}
+		if kw.IsDStar {
+			mt, ok := valType.(*MapType)
+			if !ok {
+				return fmt.Errorf("%d:%d: %s: **unpack argument must be a map, got %s",
+					pos.Line, pos.Col, who, valType)
+			}
+			if _, isStr := mt.Key.(*StrType); !isStr {
+				return fmt.Errorf("%d:%d: %s: **unpack map must have str keys, got %s",
+					pos.Line, pos.Col, who, mt.Key)
+			}
+			if ft.KwargsElem == nil {
+				return fmt.Errorf("%d:%d: %s does not accept **kwargs; cannot use **unpack",
+					pos.Line, pos.Col, who)
+			}
+			if !IsAssignable(mt.Value, ft.KwargsElem) {
+				return fmt.Errorf("%d:%d: %s: **unpack value type %s not assignable to **kwargs type %s",
+					pos.Line, pos.Col, who, mt.Value, ft.KwargsElem)
+			}
+			hasDStar = true
+			continue
+		}
+		// Named kwarg: try to match a named param first.
+		matched := false
+		for i := 0; i < nNamed; i++ {
+			if i < len(ft.ParamNames) && ft.ParamNames[i] == kw.Name {
+				if filled[i] {
+					return fmt.Errorf("%d:%d: %s: parameter %s already supplied",
+						pos.Line, pos.Col, who, kw.Name)
+				}
+				if !IsAssignable(valType, ft.Params[i]) {
+					return fmt.Errorf("%d:%d: %s: parameter %s expected %s, got %s",
+						pos.Line, pos.Col, who, kw.Name, ft.Params[i], valType)
+				}
+				filled[i] = true
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		if ft.KwargsElem == nil {
+			return fmt.Errorf("%d:%d: %s: unexpected keyword argument %q",
+				pos.Line, pos.Col, who, kw.Name)
+		}
+		if !IsAssignable(valType, ft.KwargsElem) {
+			return fmt.Errorf("%d:%d: %s: keyword argument %q expected %s, got %s",
+				pos.Line, pos.Col, who, kw.Name, ft.KwargsElem, valType)
+		}
+	}
+
+	// Every named param must be filled statically (by positional or named
+	// kwarg) unless it has a default. **unpack only contributes to **kwargs
+	// in v1 — it does not bind to named params, which keeps codegen
+	// straightforward.
+	for i := 0; i < nNamed; i++ {
+		if filled[i] {
+			continue
+		}
+		if i < len(ft.ParamDefaults) && ft.ParamDefaults[i] != nil {
+			continue
+		}
+		return fmt.Errorf("%d:%d: %s: missing argument for parameter %s",
+			pos.Line, pos.Col, who, paramName(ft, i))
+	}
+	_ = hasStarUnpack
+	_ = hasDStar
+	return nil
+}
+
+// isBuiltinName returns true for names we treat as built-in functions in
+// checkCallExpr. Builtins receive only positional args.
+func isBuiltinName(name string) bool {
+	switch name {
+	case "isinstance", "print", "len", "range", "next",
+		"int", "float", "str", "bytes", "bytearray":
+		return true
+	}
+	return false
 }
 
 func (c *Checker) checkIndexExpr(e *parser.IndexExpr) (Type, error) {
@@ -1740,6 +2131,15 @@ func (c *Checker) resolveTypeAnnotation(ann *parser.TypeAnnotation) Type {
 			return nil
 		}
 		return &MapType{Key: key, Value: val}
+	case "Iterator":
+		if len(ann.Params) != 1 {
+			return nil
+		}
+		elem := c.resolveTypeAnnotation(ann.Params[0])
+		if elem == nil {
+			return nil
+		}
+		return &IteratorType{Elem: elem}
 	case "tuple":
 		if len(ann.Params) == 0 {
 			return &TupleType{Elements: nil}

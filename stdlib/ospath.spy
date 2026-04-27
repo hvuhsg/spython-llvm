@@ -21,15 +21,26 @@ def _substr(s: str, start: int, end: int) -> str: ...
 @extern
 def _rfind_char(s: str, ch: str) -> int: ...
 
-def join(a: str, b: str) -> str:
+def _join2(a: str, b: str) -> str:
     if len(a) == 0:
         return b
-    # If b is absolute, return it unchanged (CPython behavior).
+    # If b is absolute, CPython resets the result to b — every prior segment
+    # is discarded.
     if len(b) > 0 and b[0] == "/":
         return b
     if a[len(a) - 1] == "/":
         return a + b
     return a + "/" + b
+
+# CPython's posixpath.join takes a leading positional path plus *paths.
+# spython's varargs are uniformly typed, so we type both as str.
+def join(path: str, *paths: str) -> str:
+    out: str = path
+    i: int = 0
+    while i < len(paths):
+        out = _join2(out, paths[i])
+        i = i + 1
+    return out
 
 # split("/a/b/c") -> ("/a/b", "c"). Separator stripped from the head except
 # when head is just "/" (i.e. splitting "/foo" -> ("/", "foo")).

@@ -1,0 +1,258 @@
+# stdlib/itertools.spy — generator-based iterator helpers, name-compatible
+# with CPython's `itertools` where the type system allows.
+#
+# Constraints (all relative to CPython 3.13):
+#   * spython has no first-class functions or closures, so every itertools
+#     function that takes a callable is omitted: filterfalse, dropwhile,
+#     takewhile, starmap, groupby, accumulate(func=...).
+#   * spython has no parametric polymorphism, so iterators that CPython
+#     spells generically over T are int-specialized here. Float/str
+#     variants would be straight copies once a `.spy` generics story
+#     lands.
+#   * spython generators do not yet support *args / **kwargs in their
+#     declared parameters, so `chain(*iterables)` becomes
+#     `chain(its: list[Iterator[int]])` — same semantics, list-shaped
+#     argument.
+
+# count(start, step) — infinite arithmetic progression. CPython allows step
+# defaulted to 1; spython has no defaults yet, so callers pass both.
+def count(start: int, step: int) -> Iterator[int]:
+    n: int = start
+    while True:
+        yield n
+        n = n + step
+
+# repeat(value, times) — finite repetition. CPython's bare `repeat(value)`
+# is infinite; use repeat_forever for that surface.
+def repeat(value: int, times: int) -> Iterator[int]:
+    i: int = 0
+    while i < times:
+        yield value
+        i = i + 1
+
+def repeat_forever(value: int) -> Iterator[int]:
+    while True:
+        yield value
+
+# cycle(xs) — infinite cycle through a list. An empty list yields nothing
+# and exits immediately, matching CPython.
+def cycle(xs: list[int]) -> Iterator[int]:
+    if len(xs) == 0:
+        return
+    while True:
+        i: int = 0
+        while i < len(xs):
+            yield xs[i]
+            i = i + 1
+
+# chain(its) — flatten a list of iterators end-to-end. CPython spells this
+# `chain(*iterables)`; same behavior, different argument shape.
+def chain(its: list[Iterator[int]]) -> Iterator[int]:
+    i: int = 0
+    while i < len(its):
+        yield from its[i]
+        i = i + 1
+
+# chain_lists(xss) — same shape as chain, but for materialized lists. Often
+# the more convenient surface in spython since most data starts as lists.
+def chain_lists(xss: list[list[int]]) -> Iterator[int]:
+    i: int = 0
+    while i < len(xss):
+        inner: list[int] = xss[i]
+        j: int = 0
+        while j < len(inner):
+            yield inner[j]
+            j = j + 1
+        i = i + 1
+
+# islice(it, stop) — first `stop` items of an iterator. Negative stop is
+# rejected by CPython; we treat negative as zero (yield nothing).
+def islice(it: Iterator[int], stop: int) -> Iterator[int]:
+    i: int = 0
+    for x in it:
+        if i >= stop:
+            return
+        yield x
+        i = i + 1
+
+# islice_range(it, start, stop, step) — three-arg form. step must be > 0.
+# stop < 0 means "until exhausted" (matching CPython's None sentinel; we
+# encode it as -1 since spython has no None-typed ints).
+def islice_range(it: Iterator[int], start: int, stop: int, step: int) -> Iterator[int]:
+    if step <= 0:
+        raise ValueError("islice_range step must be positive")
+    i: int = 0
+    next_emit: int = start
+    for x in it:
+        if stop >= 0:
+            if i >= stop:
+                return
+        if i >= start:
+            if i == next_emit:
+                yield x
+                next_emit = next_emit + step
+        i = i + 1
+
+# accumulate(xs) — running totals. CPython's func= argument is omitted
+# (no first-class functions); always sums.
+def accumulate(xs: list[int]) -> Iterator[int]:
+    if len(xs) == 0:
+        return
+    total: int = xs[0]
+    yield total
+    i: int = 1
+    while i < len(xs):
+        total = total + xs[i]
+        yield total
+        i = i + 1
+
+# pairwise(xs) — adjacent pairs. CPython 3.10+; yields tuples.
+def pairwise(xs: list[int]) -> Iterator[tuple[int, int]]:
+    i: int = 1
+    while i < len(xs):
+        yield (xs[i - 1], xs[i])
+        i = i + 1
+
+# compress(data, selectors) — yield data[i] where selectors[i] is truthy.
+# CPython stops at the shorter of the two; same here.
+def compress(data: list[int], selectors: list[bool]) -> Iterator[int]:
+    n: int = len(data)
+    if len(selectors) < n:
+        n = len(selectors)
+    i: int = 0
+    while i < n:
+        if selectors[i]:
+            yield data[i]
+        i = i + 1
+
+# batched(xs, n) — fixed-size chunks. CPython 3.12+ yields tuples; we
+# yield lists since spython tuples are fixed-arity at type level.
+def batched(xs: list[int], n: int) -> Iterator[list[int]]:
+    if n <= 0:
+        raise ValueError("batched n must be positive")
+    i: int = 0
+    while i < len(xs):
+        chunk: list[int] = []
+        j: int = 0
+        while j < n:
+            if i + j >= len(xs):
+                break
+            chunk.append(xs[i + j])
+            j = j + 1
+        yield chunk
+        i = i + n
+
+# tee(it) — eagerly drain into a buffer and return two snapshots over it.
+# CPython's tee is lazy and returns N iterators; without closures we can
+# only return materialized lists. Caller iterates each list directly.
+def tee(it: Iterator[int]) -> tuple[list[int], list[int]]:
+    buf: list[int] = []
+    for x in it:
+        buf.append(x)
+    copy: list[int] = []
+    i: int = 0
+    while i < len(buf):
+        copy.append(buf[i])
+        i = i + 1
+    return (buf, copy)
+
+# combinations(xs, r) — r-length combinations from xs in lexicographic
+# order. CPython yields tuples; we yield lists. r must be 0..len(xs).
+def combinations(xs: list[int], r: int) -> Iterator[list[int]]:
+    n: int = len(xs)
+    if r < 0:
+        raise ValueError("combinations r must be non-negative")
+    if r > n:
+        return
+    indices: list[int] = []
+    i: int = 0
+    while i < r:
+        indices.append(i)
+        i = i + 1
+    # Initial combination: indices [0, 1, .., r-1].
+    out: list[int] = []
+    j: int = 0
+    while j < r:
+        out.append(xs[indices[j]])
+        j = j + 1
+    yield out
+    if r == 0:
+        return
+    # Loop: find rightmost index that can still be incremented.
+    while True:
+        k: int = r - 1
+        found: bool = False
+        while k >= 0:
+            if indices[k] != k + n - r:
+                found = True
+                break
+            k = k - 1
+        if not found:
+            return
+        indices[k] = indices[k] + 1
+        m: int = k + 1
+        while m < r:
+            indices[m] = indices[m - 1] + 1
+            m = m + 1
+        nxt: list[int] = []
+        p: int = 0
+        while p < r:
+            nxt.append(xs[indices[p]])
+            p = p + 1
+        yield nxt
+
+# permutations(xs, r) — r-length permutations in lexicographic order of
+# the input positions. r must be 0..len(xs).
+def permutations(xs: list[int], r: int) -> Iterator[list[int]]:
+    n: int = len(xs)
+    if r < 0:
+        raise ValueError("permutations r must be non-negative")
+    if r > n:
+        return
+    indices: list[int] = []
+    i: int = 0
+    while i < n:
+        indices.append(i)
+        i = i + 1
+    cycles: list[int] = []
+    c: int = 0
+    while c < r:
+        cycles.append(n - c)
+        c = c + 1
+    out: list[int] = []
+    j: int = 0
+    while j < r:
+        out.append(xs[indices[j]])
+        j = j + 1
+    yield out
+    if r == 0:
+        return
+    while True:
+        k: int = r - 1
+        done: bool = True
+        while k >= 0:
+            cycles[k] = cycles[k] - 1
+            if cycles[k] == 0:
+                tmp: int = indices[k]
+                m: int = k
+                while m < n - 1:
+                    indices[m] = indices[m + 1]
+                    m = m + 1
+                indices[n - 1] = tmp
+                cycles[k] = n - k
+            else:
+                idx: int = n - cycles[k]
+                tmp2: int = indices[k]
+                indices[k] = indices[idx]
+                indices[idx] = tmp2
+                nxt: list[int] = []
+                p: int = 0
+                while p < r:
+                    nxt.append(xs[indices[p]])
+                    p = p + 1
+                yield nxt
+                done = False
+                break
+            k = k - 1
+        if done:
+            return

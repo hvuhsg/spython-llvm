@@ -1,15 +1,24 @@
 import sys
 
-# argv[0] is the program path. We don't know the exact path (it's a tempfile
-# when invoked via `spython run`), but it must be non-empty.
-args: list[str] = sys.argv()
-print(len(args) >= 1)
-print(len(args[0]) > 0)
+# argv is now an attribute (a list[str]), matching CPython.
+print(len(sys.argv) >= 1)
+print(len(sys.argv[0]) > 0)
 
-# platform is one of the known values.
-p: str = sys.platform()
-is_known: bool = p == "darwin" or p == "linux" or p == "win32"
+# platform is now an attribute, also matching CPython.
+is_known: bool = sys.platform == "darwin" or sys.platform == "linux" or sys.platform == "win32"
 print(is_known)
+
+# byteorder: spython runs on x86_64/arm64 where this is always "little".
+print(sys.byteorder)
+
+# maxsize: spython's int is i64, so this is 2**63 - 1 = 9223372036854775807.
+print(sys.maxsize)
+
+# version is a non-empty string describing the build.
+print(len(sys.version) > 0)
+
+# executable mirrors argv[0] in spython; never empty when argv has anything.
+print(len(sys.executable) > 0)
 
 # stdout_write emits without a trailing newline; chain two writes into one line.
 sys.stdout_write("hello ")

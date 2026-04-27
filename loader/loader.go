@@ -333,11 +333,58 @@ func validateImportedTopLevel(program *parser.Program, modID string) error {
 	return nil
 }
 
-// isConstExpr returns true when expr is a literal (int/float/str/bool/None).
-// v1 keeps this strict; arithmetic on literals can be added later.
+// isConstExpr returns true when expr is a valid initializer for a top-level
+// binding in an imported module. Scalars (int/float/str/bool/None), unary
+// +/-/~ over constants, and list/tuple/map literals of constants all count.
+// Plain function calls (e.g. `inf: float = _inf()` in math.spy) are also
+// allowed: the codegen runs every imported module's init pass exactly once,
+// in topological order, so a call here is the same execution model as a
+// literal — just lets the value come from an extern. Method calls and
+// attribute access on the LHS are still disallowed because they imply
+// reaching into another module's mutable state.
 func isConstExpr(expr parser.Expr) bool {
-	switch expr.(type) {
+	switch e := expr.(type) {
 	case *parser.IntLit, *parser.FloatLit, *parser.StrLit, *parser.BoolLit, *parser.NoneLit:
+		return true
+	case *parser.UnaryExpr:
+		return isConstExpr(e.Operand)
+	case *parser.ListLit:
+		for _, el := range e.Elements {
+			if !isConstExpr(el) {
+				return false
+			}
+		}
+		return true
+	case *parser.TupleLit:
+		for _, el := range e.Elements {
+			if !isConstExpr(el) {
+				return false
+			}
+		}
+		return true
+	case *parser.MapLit:
+		for i, k := range e.Keys {
+			if !isConstExpr(k) || !isConstExpr(e.Values[i]) {
+				return false
+			}
+		}
+		return true
+	case *parser.CallExpr:
+		// Only Ident-callee calls — no `obj.method()` at module init, since
+		// that would imply mutating cross-module state during load.
+		if _, ok := e.Func.(*parser.IdentExpr); !ok {
+			return false
+		}
+		for _, a := range e.Args {
+			if !isConstExpr(a) {
+				return false
+			}
+		}
+		for _, kw := range e.Kwargs {
+			if !isConstExpr(kw.Value) {
+				return false
+			}
+		}
 		return true
 	}
 	return false

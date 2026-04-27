@@ -1,10 +1,17 @@
 import ospath
 
-# join
+# join — 2-arg cases first (regression target).
 print(ospath.join("/a/b", "c"))        # /a/b/c
 print(ospath.join("/a/b/", "c"))       # /a/b/c
 print(ospath.join("/a/b", "/c"))       # /c    (absolute wins)
 print(ospath.join("", "c"))            # c
+
+# join — 3+ arg variadic form.
+print(ospath.join("/a", "b", "c"))             # /a/b/c
+print(ospath.join("/a", "b", "c", "d.txt"))    # /a/b/c/d.txt
+print(ospath.join("/a/b/", "c/", "d"))         # /a/b/c/d
+print(ospath.join("a", "b", "/abs", "c"))      # /abs/c (absolute resets)
+print(ospath.join("/root"))                     # /root (zero variadic args)
 
 # split
 h1: tuple[str, str] = ospath.split("/a/b/c.txt")
