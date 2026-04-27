@@ -1,6 +1,11 @@
 package types
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/yehoyadashtinmetz/spython/parser"
+)
 
 type Type interface {
 	String() string
@@ -41,6 +46,25 @@ type NoneType struct{}
 
 func (t *NoneType) String() string    { return "None" }
 func (t *NoneType) Equals(o Type) bool { _, ok := o.(*NoneType); return ok }
+
+// IteratorType is the static type of a generator function's return value.
+// Today only generator functions (def with `yield` body, declared
+// `-> Iterator[T]`) produce these; user-defined iterator classes are not
+// yet covered. Iteration consumers (`for`, `next()`) treat any
+// IteratorType as opaque and dispatch through the synthesized
+// __iter__/__next__ methods.
+type IteratorType struct {
+	Elem Type
+}
+
+func (t *IteratorType) String() string { return fmt.Sprintf("Iterator[%s]", t.Elem.String()) }
+func (t *IteratorType) Equals(o Type) bool {
+	ot, ok := o.(*IteratorType)
+	if !ok {
+		return false
+	}
+	return t.Elem.Equals(ot.Elem)
+}
 
 type ListType struct {
 	Elem Type
@@ -104,24 +128,52 @@ func (t *MapType) Equals(o Type) bool {
 }
 
 type FuncType struct {
-	Params    []Type
-	Return    Type
-	DefinedIn string // module ID where this function is defined; "" for anonymous/method types
+	Params     []Type
+	ParamNames []string // names matching Params, used for kwarg binding
+	// KwOnlyStart is the index in Params at which keyword-only parameters
+	// begin (those declared after *args). Equal to len(Params) when no
+	// keyword-only params exist.
+	KwOnlyStart int
+	// VarArgsElem is the element type of *args, or nil when the function
+	// has no *args parameter. The varargs name is in VarArgsName.
+	VarArgsElem Type
+	VarArgsName string
+	// KwargsElem is the value type of **kwargs (keys are always str), or
+	// nil when the function has no **kwargs parameter.
+	KwargsElem Type
+	KwargsName string
+	Return     Type
+	DefinedIn  string // module ID where this function is defined; "" for anonymous/method types
 	// ExternSymbol, when non-empty, overrides the default call-site mangling.
 	// Set by @extern("name") declarations; code generation uses this literal
 	// C symbol instead of spy_<module>_<name>.
 	ExternSymbol string
+	// ParamDefaults is parallel to Params: ParamDefaults[i] is the default
+	// expression for Params[i], or nil when the parameter is required.
+	// Defaults are inlined at each call site that omits the slot (the
+	// expression is re-emitted per call, not shared via a global).
+	ParamDefaults []parser.Expr
 }
 
 func (t *FuncType) String() string {
-	params := ""
-	for i, p := range t.Params {
-		if i > 0 {
-			params += ", "
-		}
-		params += p.String()
+	parts := []string{}
+	kwStart := t.KwOnlyStart
+	if kwStart == 0 && len(t.Params) > 0 && t.VarArgsElem == nil {
+		kwStart = len(t.Params)
 	}
-	return fmt.Sprintf("(%s) -> %s", params, t.Return.String())
+	for i, p := range t.Params {
+		if i == kwStart && t.VarArgsElem != nil {
+			parts = append(parts, "*"+t.VarArgsElem.String())
+		}
+		parts = append(parts, p.String())
+	}
+	if t.VarArgsElem != nil && kwStart == len(t.Params) {
+		parts = append(parts, "*"+t.VarArgsElem.String())
+	}
+	if t.KwargsElem != nil {
+		parts = append(parts, "**"+t.KwargsElem.String())
+	}
+	return fmt.Sprintf("(%s) -> %s", strings.Join(parts, ", "), t.Return.String())
 }
 
 func (t *FuncType) Equals(o Type) bool {
@@ -136,6 +188,21 @@ func (t *FuncType) Equals(o Type) bool {
 		if !t.Params[i].Equals(ot.Params[i]) {
 			return false
 		}
+	}
+	if t.KwOnlyStart != ot.KwOnlyStart {
+		return false
+	}
+	if (t.VarArgsElem == nil) != (ot.VarArgsElem == nil) {
+		return false
+	}
+	if t.VarArgsElem != nil && !t.VarArgsElem.Equals(ot.VarArgsElem) {
+		return false
+	}
+	if (t.KwargsElem == nil) != (ot.KwargsElem == nil) {
+		return false
+	}
+	if t.KwargsElem != nil && !t.KwargsElem.Equals(ot.KwargsElem) {
+		return false
 	}
 	return t.Return.Equals(ot.Return)
 }
