@@ -1,0 +1,92 @@
+import itertools
+
+# count(start, step) — take 5 via islice.
+print("count:")
+for x in itertools.islice(itertools.count(10, 3), 5):
+    print(x)
+
+# repeat(value, times)
+print("repeat:")
+for x in itertools.repeat(7, 3):
+    print(x)
+
+# repeat_forever via islice
+print("repeat_forever:")
+for x in itertools.islice(itertools.repeat_forever(42), 4):
+    print(x)
+
+# cycle, bounded by islice
+print("cycle:")
+for x in itertools.islice(itertools.cycle([1, 2, 3]), 7):
+    print(x)
+
+# chain
+print("chain:")
+its: list[Iterator[int]] = [itertools.count(0, 1), itertools.count(100, 1)]
+inner_it: Iterator[int] = itertools.chain(its)
+n: int = 0
+for x in inner_it:
+    print(x)
+    n = n + 1
+    if n >= 6:
+        break
+
+# chain_lists
+print("chain_lists:")
+for x in itertools.chain_lists([[1, 2], [3], [4, 5, 6]]):
+    print(x)
+
+# islice_range
+print("islice_range:")
+for x in itertools.islice_range(itertools.count(0, 1), 2, 10, 3):
+    print(x)
+
+# accumulate
+print("accumulate:")
+for x in itertools.accumulate([1, 2, 3, 4, 5]):
+    print(x)
+
+# pairwise
+print("pairwise:")
+for p in itertools.pairwise([10, 20, 30, 40]):
+    print(p[0])
+    print(p[1])
+
+# compress
+print("compress:")
+for x in itertools.compress([1, 2, 3, 4, 5], [True, False, True, False, True]):
+    print(x)
+
+# batched
+print("batched:")
+for chunk in itertools.batched([1, 2, 3, 4, 5, 6, 7], 3):
+    print(len(chunk))
+    j: int = 0
+    while j < len(chunk):
+        print(chunk[j])
+        j = j + 1
+
+# tee
+print("tee:")
+def src() -> Iterator[int]:
+    yield 11
+    yield 22
+    yield 33
+
+a, b = itertools.tee(src())
+for x in a:
+    print(x)
+for x in b:
+    print(x)
+
+# combinations
+print("combinations:")
+for combo in itertools.combinations([1, 2, 3, 4], 2):
+    print(combo[0])
+    print(combo[1])
+
+# permutations
+print("permutations:")
+for perm in itertools.permutations([1, 2, 3], 2):
+    print(perm[0])
+    print(perm[1])
