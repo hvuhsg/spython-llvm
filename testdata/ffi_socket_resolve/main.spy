@@ -1,0 +1,10 @@
+from socket import gethostbyname, gaierror
+
+ip = gethostbyname("127.0.0.1")
+print(ip)
+
+try:
+    bad = gethostbyname("definitely-not-a-real-hostname.invalid")
+    print("unexpected")
+except gaierror as e:
+    print("resolver failed")

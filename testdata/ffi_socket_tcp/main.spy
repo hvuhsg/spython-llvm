@@ -1,0 +1,31 @@
+from socket import socket, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR
+
+server = socket(AF_INET, SOCK_STREAM)
+server.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", 0))
+server.listen(1)
+
+bound = server.getsockname()
+port: int = bound[1]
+print(bound[0])
+
+client = socket(AF_INET, SOCK_STREAM)
+client.connect(("127.0.0.1", port))
+
+pair = server.accept()
+conn = pair[0]
+peer = pair[1]
+print(peer[0])
+
+n = client.send(b"hello")
+print(n)
+data = conn.recv(1024)
+print(data)
+
+conn.sendall(b"world")
+reply = client.recv(1024)
+print(reply)
+
+conn.close()
+client.close()
+server.close()

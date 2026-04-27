@@ -1,0 +1,19 @@
+from socket import socket, AF_INET, SOCK_DGRAM
+
+s = socket(AF_INET, SOCK_DGRAM)
+s.bind(("127.0.0.1", 0))
+
+bound = s.getsockname()
+port: int = bound[1]
+print(bound[0])
+
+n = s.sendto(b"ping", ("127.0.0.1", port))
+print(n)
+
+pair = s.recvfrom(1024)
+data = pair[0]
+peer = pair[1]
+print(data)
+print(peer[0])
+
+s.close()
