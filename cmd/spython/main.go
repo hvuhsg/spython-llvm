@@ -123,8 +123,11 @@ func build(file, output string) error {
 	runtimePath := findRuntime()
 
 	// Collect C-backed stdlib modules and their link-directive flags.
+	// `-lm` is required by the runtime (float formatting uses log10/floor/fabs).
+	// Stdlib modules like math.spy may also request it; DedupeFlags collapses
+	// the duplicate.
 	var cFiles []string
-	var linkFlags []string
+	linkFlags := []string{"-lm"}
 	for _, m := range res.Modules {
 		if m.CFile != "" {
 			cFiles = append(cFiles, m.CFile)

@@ -12,15 +12,10 @@
 // Returns the number of bytes written (excluding the null terminator).
 // Non-finite values render as "nan", "inf", "-inf" with no ".0" suffix.
 //
-// Picks fixed-point form when -4 <= exp10(x) < 16, otherwise exponential —
+// Picks fixed-point form when 1e-4 <= |x| < 1e16, otherwise exponential —
 // the cutoffs CPython's float_repr uses. Then chooses the shortest precision
 // that strtod round-trips back to the original double, and strips trailing
 // zeros so e.g. 0.5 prints as "0.5" not "0.50000".
-//
-// Avoids libm (log10/floor/fabs) so the runtime links cleanly without -lm
-// on Linux: the decimal exponent is parsed out of a "%.0e" probe string
-// instead. isnan/isinf/signbit are C99 macros that compile to bit-level
-// checks and don't require libm.
 static int spy_format_float(double x, char *buf, size_t buflen) {
     if (isnan(x)) return snprintf(buf, buflen, "nan");
     if (isinf(x)) return snprintf(buf, buflen, x < 0 ? "-inf" : "inf");
@@ -36,16 +31,12 @@ static int spy_format_float(double x, char *buf, size_t buflen) {
         if (strtod(probe, NULL) == x) { precision = p; break; }
     }
 
-    // Get the decimal exponent by rendering "%.0e" and parsing the suffix.
-    snprintf(probe, sizeof(probe), "%.0e", x);
-    int exp10 = 0;
-    char *e_pos = strchr(probe, 'e');
-    if (e_pos) exp10 = atoi(e_pos + 1);
-
+    double ax = fabs(x);
     int len;
-    if (exp10 >= -4 && exp10 < 16) {
-        // Fixed form: %.*f with enough fractional digits to keep `precision`
-        // significant digits, then strip trailing zeros after the decimal.
+    if (ax >= 1e-4 && ax < 1e16) {
+        // Fixed form: render with %.*f using enough fractional digits to keep
+        // `precision` significant digits, then strip trailing zeros.
+        int exp10 = (int)floor(log10(ax));
         int frac = precision - 1 - exp10;
         if (frac < 0) frac = 0;
         len = snprintf(buf, buflen, "%.*f", frac, x);
