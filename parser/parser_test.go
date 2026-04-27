@@ -112,3 +112,135 @@ func TestParseSuperCall(t *testing.T) {
 		t.Fatalf("expected SuperExpr as callee object, got %T", attr.Object)
 	}
 }
+
+func TestParseVarArgsAndKwargsDef(t *testing.T) {
+	src := "def f(a: int, *xs: int, mode: str, **kw: int) -> None:\n    return\n"
+	prog := parseSource(t, src)
+	fd, ok := prog.Stmts[0].(*FuncDef)
+	if !ok {
+		t.Fatalf("expected FuncDef, got %T", prog.Stmts[0])
+	}
+	if len(fd.Params) != 4 {
+		t.Fatalf("expected 4 params, got %d", len(fd.Params))
+	}
+	wantKinds := []ParamKind{ParamPositional, ParamVarArgs, ParamPositional, ParamKwargs}
+	wantNames := []string{"a", "xs", "mode", "kw"}
+	for i, p := range fd.Params {
+		if p.Kind != wantKinds[i] {
+			t.Fatalf("param %d: expected Kind %d, got %d", i, wantKinds[i], p.Kind)
+		}
+		if p.Name != wantNames[i] {
+			t.Fatalf("param %d: expected name %q, got %q", i, wantNames[i], p.Name)
+		}
+	}
+}
+
+func TestParseCallWithKwargsAndUnpacks(t *testing.T) {
+	src := "f(1, *xs, k=2, **m)\n"
+	prog := parseSource(t, src)
+	call, ok := prog.Stmts[0].(*ExprStmt).Expr.(*CallExpr)
+	if !ok {
+		t.Fatalf("expected CallExpr, got %T", prog.Stmts[0].(*ExprStmt).Expr)
+	}
+	if len(call.Args) != 2 {
+		t.Fatalf("expected 2 positional args, got %d", len(call.Args))
+	}
+	if !call.IsArgStar(1) || call.IsArgStar(0) {
+		t.Fatalf("expected only arg[1] to be *unpack, got argStar=%v", call.ArgStar)
+	}
+	if len(call.Kwargs) != 2 {
+		t.Fatalf("expected 2 kwargs, got %d", len(call.Kwargs))
+	}
+	if call.Kwargs[0].Name != "k" || call.Kwargs[0].IsDStar {
+		t.Fatalf("expected first kwarg k=, got %+v", call.Kwargs[0])
+	}
+	if !call.Kwargs[1].IsDStar {
+		t.Fatalf("expected second kwarg to be **unpack, got %+v", call.Kwargs[1])
+	}
+}
+
+func TestParseRejectsPositionalAfterKwarg(t *testing.T) {
+	src := "f(a=1, 2)\n"
+	l := lexer.New(src)
+	tokens, err := l.Tokens()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New(tokens)
+	if _, err := p.Parse(); err == nil {
+		t.Fatalf("expected parse error for positional after kwarg")
+	}
+}
+
+func TestParseDefaultArguments(t *testing.T) {
+	src := "def f(a: int, b: int = 10, c: str = \"hi\") -> None:\n    return\n"
+	prog := parseSource(t, src)
+	fd, ok := prog.Stmts[0].(*FuncDef)
+	if !ok {
+		t.Fatalf("expected FuncDef, got %T", prog.Stmts[0])
+	}
+	if len(fd.Params) != 3 {
+		t.Fatalf("expected 3 params, got %d", len(fd.Params))
+	}
+	if fd.Params[0].Default != nil {
+		t.Fatalf("expected param 0 (a) to have no default")
+	}
+	intLit, ok := fd.Params[1].Default.(*IntLit)
+	if !ok || intLit.Value != 10 {
+		t.Fatalf("expected param 1 default IntLit(10), got %+v", fd.Params[1].Default)
+	}
+	strLit, ok := fd.Params[2].Default.(*StrLit)
+	if !ok || strLit.Value != "hi" {
+		t.Fatalf("expected param 2 default StrLit(\"hi\"), got %+v", fd.Params[2].Default)
+	}
+}
+
+func TestParseDefaultsWithVarArgsAndKwOnly(t *testing.T) {
+	src := "def f(a: int = 1, *xs: int, mode: str = \"fast\", **kw: int) -> None:\n    return\n"
+	prog := parseSource(t, src)
+	fd, ok := prog.Stmts[0].(*FuncDef)
+	if !ok {
+		t.Fatalf("expected FuncDef, got %T", prog.Stmts[0])
+	}
+	if len(fd.Params) != 4 {
+		t.Fatalf("expected 4 params, got %d", len(fd.Params))
+	}
+	if fd.Params[0].Default == nil {
+		t.Fatalf("expected positional param 'a' to have a default")
+	}
+	if fd.Params[1].Default != nil {
+		t.Fatalf("*args must not have a default")
+	}
+	if fd.Params[2].Default == nil {
+		t.Fatalf("expected kw-only param 'mode' to have a default")
+	}
+	if fd.Params[3].Default != nil {
+		t.Fatalf("**kwargs must not have a default")
+	}
+}
+
+func TestParseRejectsRequiredAfterDefault(t *testing.T) {
+	src := "def f(a: int = 1, b: int) -> None:\n    return\n"
+	l := lexer.New(src)
+	tokens, err := l.Tokens()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New(tokens)
+	if _, err := p.Parse(); err == nil {
+		t.Fatalf("expected parse error for required positional after defaulted positional")
+	}
+}
+
+func TestParseRejectsDefaultOnVarArgs(t *testing.T) {
+	src := "def f(*xs: int = 1) -> None:\n    return\n"
+	l := lexer.New(src)
+	tokens, err := l.Tokens()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New(tokens)
+	if _, err := p.Parse(); err == nil {
+		t.Fatalf("expected parse error for default on *args")
+	}
+}

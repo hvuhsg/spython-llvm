@@ -43,6 +43,50 @@ type Program struct {
 	Stmts []Stmt
 }
 
+// FuncContainsYield reports whether the function body contains any
+// `yield` statement at this function's level (it does not descend into
+// nested FuncDef or ClassDef bodies, which would be their own functions).
+func FuncContainsYield(body []Stmt) bool {
+	for _, s := range body {
+		if stmtContainsYield(s) {
+			return true
+		}
+	}
+	return false
+}
+
+func stmtContainsYield(s Stmt) bool {
+	switch x := s.(type) {
+	case *YieldStmt:
+		return true
+	case *IfStmt:
+		if FuncContainsYield(x.Body) {
+			return true
+		}
+		for _, e := range x.Elifs {
+			if FuncContainsYield(e.Body) {
+				return true
+			}
+		}
+		return FuncContainsYield(x.ElseBody)
+	case *WhileStmt:
+		return FuncContainsYield(x.Body)
+	case *ForStmt:
+		return FuncContainsYield(x.Body)
+	case *TryStmt:
+		if FuncContainsYield(x.Body) {
+			return true
+		}
+		for _, e := range x.Excepts {
+			if FuncContainsYield(e.Body) {
+				return true
+			}
+		}
+		return FuncContainsYield(x.FinallyBody)
+	}
+	return false
+}
+
 // Statements
 
 type ExprStmt struct {
@@ -151,11 +195,25 @@ type FuncDef struct {
 	// Body is empty (either an inline `...` stub or an ignored block).
 	Extern       bool
 	ExternSymbol string // optional override; empty => default mangling spy_<module>_<name>
+	// IsGenerator is set during parsing when the body contains any `yield`
+	// statement. Generator functions compile to a state-machine class
+	// rather than a flat LLVM function.
+	IsGenerator bool
 }
+
+type ParamKind int
+
+const (
+	ParamPositional ParamKind = iota
+	ParamVarArgs             // *args
+	ParamKwargs              // **kwargs
+)
 
 type FuncParam struct {
 	Name    string
 	TypeAnn *TypeAnnotation
+	Kind    ParamKind
+	Default Expr
 }
 
 func (s *FuncDef) GetPos() Pos { return s.Pos }
@@ -236,6 +294,18 @@ type RaiseStmt struct {
 
 func (s *RaiseStmt) GetPos() Pos { return s.Pos }
 func (s *RaiseStmt) stmtNode()   {}
+
+// YieldStmt represents `yield expr` or `yield from expr`. v1 only accepts
+// yield in statement position (no `x = yield expr`). A bare `yield` (no
+// value) is not supported in v1 — every yield must carry an expression.
+type YieldStmt struct {
+	Pos    Pos
+	Value  Expr // never nil in v1
+	IsFrom bool // true for `yield from expr`
+}
+
+func (s *YieldStmt) GetPos() Pos { return s.Pos }
+func (s *YieldStmt) stmtNode()   {}
 
 type ClassDef struct {
 	Pos     Pos
@@ -335,11 +405,48 @@ type UnaryExpr struct {
 func (e *UnaryExpr) GetPos() Pos { return e.Pos }
 func (e *UnaryExpr) exprNode()   {}
 
+// KwArg represents either `name=value` (Name set) or `**expr` (IsDStar=true, Name="").
+type KwArg struct {
+	Pos     Pos
+	Name    string
+	Value   Expr
+	IsDStar bool
+}
+
 type CallExpr struct {
 	baseExpr
 	Pos  Pos
 	Func Expr
-	Args []Expr
+	// Args holds positional args in source order. Some entries may be *expr
+	// unpacks; ArgStar[i]==true marks those. ArgStar may be nil when no
+	// unpacks are present (the common case), in which case Args is treated
+	// as all-positional.
+	Args    []Expr
+	ArgStar []bool
+	// Kwargs holds keyword args (Name=value) and **expr unpacks, in source
+	// order. nil when none.
+	Kwargs []KwArg
+}
+
+// IsArgStar reports whether positional arg i is a *expr unpack.
+func (e *CallExpr) IsArgStar(i int) bool {
+	if e.ArgStar == nil {
+		return false
+	}
+	return e.ArgStar[i]
+}
+
+// HasVariadicForms reports whether the call uses any *args/**kwargs/kwarg form.
+func (e *CallExpr) HasVariadicForms() bool {
+	if len(e.Kwargs) > 0 {
+		return true
+	}
+	for _, s := range e.ArgStar {
+		if s {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *CallExpr) GetPos() Pos { return e.Pos }
