@@ -13,6 +13,10 @@ type Lexer struct {
 	col     int
 	indents []int
 	atLineStart bool
+	// parenDepth counts open `(`, `[`, `{`. While > 0, newlines are treated
+	// as whitespace (PEP 8 implicit line joining) and indentation handling
+	// is skipped, so multi-line argument lists and collection literals work.
+	parenDepth int
 }
 
 func New(source string) *Lexer {
@@ -47,6 +51,14 @@ func (l *Lexer) Tokens() ([]Token, error) {
 
 		// Newline
 		if ch == '\n' {
+			if l.parenDepth > 0 {
+				// Implicit line joining inside (), [], {} — newline is
+				// whitespace, no NEWLINE token, no re-indent on next line.
+				l.advance()
+				l.line++
+				l.col = 1
+				continue
+			}
 			l.addToken(TOKEN_NEWLINE, "\\n")
 			l.advance()
 			l.line++
@@ -383,16 +395,28 @@ func (l *Lexer) readOperator() error {
 		l.addTokenAt(TOKEN_ASSIGN, "=", startCol)
 	case '(':
 		l.addTokenAt(TOKEN_LPAREN, "(", startCol)
+		l.parenDepth++
 	case ')':
 		l.addTokenAt(TOKEN_RPAREN, ")", startCol)
+		if l.parenDepth > 0 {
+			l.parenDepth--
+		}
 	case '[':
 		l.addTokenAt(TOKEN_LBRACK, "[", startCol)
+		l.parenDepth++
 	case ']':
 		l.addTokenAt(TOKEN_RBRACK, "]", startCol)
+		if l.parenDepth > 0 {
+			l.parenDepth--
+		}
 	case '{':
 		l.addTokenAt(TOKEN_LBRACE, "{", startCol)
+		l.parenDepth++
 	case '}':
 		l.addTokenAt(TOKEN_RBRACE, "}", startCol)
+		if l.parenDepth > 0 {
+			l.parenDepth--
+		}
 	case ':':
 		l.addTokenAt(TOKEN_COLON, ":", startCol)
 	case ',':
