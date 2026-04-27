@@ -1,17 +1,56 @@
-# stdlib/socket.spy — Minimal TCP socket client. Backed by stdlib/socket.c.
-# The v1 API supports AF_INET + SOCK_STREAM (IPv4 TCP) clients only: no
-# bind/listen/accept, no select/poll, no timeouts. Sockets are blocking.
+# stdlib/socket.spy — TCP / UDP sockets, client and server. Backed by
+# stdlib/socket.c. Supports AF_INET (IPv4) with SOCK_STREAM (TCP) or
+# SOCK_DGRAM (UDP).
 #
-# Usage:
+# Client TCP:
 #   from socket import socket, AF_INET, SOCK_STREAM
 #   s = socket(AF_INET, SOCK_STREAM)
 #   s.connect(("127.0.0.1", 8080))
 #   n = s.send(b"hello")
 #   data = s.recv(4096)
 #   s.close()
+#
+# Server TCP:
+#   s = socket(AF_INET, SOCK_STREAM)
+#   s.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+#   s.bind(("127.0.0.1", 0))
+#   s.listen(5)
+#   conn, addr = s.accept()
+#   conn.recv(1024); conn.close()
+#
+# UDP:
+#   s = socket(AF_INET, SOCK_DGRAM)
+#   s.bind(("127.0.0.1", 0))
+#   s.sendto(b"ping", ("127.0.0.1", 9000))
+#   data, peer = s.recvfrom(1024)
 
 AF_INET = 2
+
 SOCK_STREAM = 1
+SOCK_DGRAM = 2
+
+SOL_SOCKET = 1
+
+# Common SO_* option names. The integer values map onto the host's real
+# constants inside socket.c, so the names are portable even though the
+# numbers we expose to spython code are spython-internal indices.
+SO_REUSEADDR = 1
+SO_KEEPALIVE = 2
+SO_BROADCAST = 3
+SO_RCVTIMEO = 4
+SO_SNDTIMEO = 5
+SO_RCVBUF = 6
+SO_SNDBUF = 7
+SO_ERROR = 8
+SO_TYPE = 9
+SO_REUSEPORT = 10
+
+IPPROTO_TCP = 6
+IPPROTO_UDP = 17
+
+SHUT_RD = 0
+SHUT_WR = 1
+SHUT_RDWR = 2
 
 @extern
 def _socket(family: int, type: int) -> int: ...
@@ -20,57 +59,274 @@ def _socket(family: int, type: int) -> int: ...
 def _connect(fd: int, host: str, port: int) -> int: ...
 
 @extern
+def _bind(fd: int, host: str, port: int) -> int: ...
+
+@extern
+def _listen(fd: int, backlog: int) -> int: ...
+
+# Returns the accepted fd (>=0) or -1 on failure. Stashes the peer address
+# in module statics; retrieve with _last_peer_host / _last_peer_port.
+@extern
+def _accept(fd: int) -> int: ...
+
+@extern
+def _shutdown(fd: int, how: int) -> int: ...
+
+@extern
 def _send(fd: int, data: bytes) -> int: ...
 
 @extern
 def _recv(fd: int, n: int) -> bytes: ...
 
 @extern
+def _sendto(fd: int, data: bytes, host: str, port: int) -> int: ...
+
+@extern
+def _recvfrom(fd: int, n: int) -> bytes: ...
+
+@extern
+def _getsockname(fd: int) -> int: ...
+
+@extern
+def _getpeername(fd: int) -> int: ...
+
+@extern
+def _last_peer_host() -> str: ...
+
+@extern
+def _last_peer_port() -> int: ...
+
+# Integer-valued setsockopt / getsockopt only. Most BOOL/int options
+# (SO_REUSEADDR, SO_KEEPALIVE, SO_RCVBUF, etc.) round-trip through this
+# pair. Timeout options (SO_RCVTIMEO / SO_SNDTIMEO) use settimeout instead.
+@extern
+def _setsockopt_int(fd: int, level: int, optname: int, value: int) -> int: ...
+
+@extern
+def _getsockopt_int(fd: int, level: int, optname: int) -> int: ...
+
+@extern
+def _setblocking(fd: int, flag: int) -> int: ...
+
+# seconds < 0 disables the timeout (returns the socket to plain blocking
+# mode). seconds == 0 puts the socket in non-blocking mode. seconds > 0
+# installs a per-call timeout via SO_RCVTIMEO / SO_SNDTIMEO.
+@extern
+def _settimeout(fd: int, seconds: float) -> int: ...
+
+@extern
 def _close(fd: int) -> None: ...
 
-# Classifier: 0 ok, 1 ECONNREFUSED, 2 other.
+# Resolve a hostname to its first IPv4 address, in dotted-decimal form.
+# Raises gaierror on lookup failure.
+@extern
+def _gethostbyname(host: str) -> str: ...
+
+@extern
+def _gethostname() -> str: ...
+
+# Error classifier — populated by every primitive. Encoding (kept stable
+# because socket.spy maps codes onto exception classes):
+#   0 ok
+#   1 ECONNREFUSED -> ConnectionRefusedError
+#   2 generic OSError
+#   3 ETIMEDOUT / EAGAIN with timeout set -> TimeoutError
+#   4 ECONNRESET -> ConnectionResetError
+#   5 ECONNABORTED -> ConnectionAbortedError
+#   6 EPIPE -> BrokenPipeError
+#   7 EAGAIN / EWOULDBLOCK without timeout -> BlockingIOError
+#   8 EAI_* (getaddrinfo failure) -> gaierror (OSError subclass)
 @extern
 def _last_error_class() -> int: ...
 
+
+# gaierror mirrors CPython's socket.gaierror (subclass of OSError, raised
+# by name resolution). spython's builtins don't ship it because it's
+# socket-specific; defining it here keeps the surface self-contained.
+class gaierror(OSError):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+
 def _raise_socket_error(msg: str) -> None:
-    cls = _last_error_class()
+    cls: int = _last_error_class()
     if cls == 1:
-        e1 = ConnectionRefusedError(msg)
+        e1: ConnectionRefusedError = ConnectionRefusedError(msg)
         raise e1
-    e = OSError(msg)
+    if cls == 3:
+        e3: TimeoutError = TimeoutError(msg)
+        raise e3
+    if cls == 4:
+        e4: ConnectionResetError = ConnectionResetError(msg)
+        raise e4
+    if cls == 5:
+        e5: ConnectionAbortedError = ConnectionAbortedError(msg)
+        raise e5
+    if cls == 6:
+        e6: BrokenPipeError = BrokenPipeError(msg)
+        raise e6
+    if cls == 7:
+        e7: BlockingIOError = BlockingIOError(msg)
+        raise e7
+    if cls == 8:
+        e8: gaierror = gaierror(msg)
+        raise e8
+    e: OSError = OSError(msg)
     raise e
+
 
 class Socket:
     def __init__(self, family: int, type: int):
         self.family = family
         self.type = type
-        self.fd = _socket(family, type)
-        if self.fd < 0:
-            _raise_socket_error("socket() failed")
+        if family < 0:
+            self.fd = -1
+        else:
+            self.fd = _socket(family, type)
+            if self.fd < 0:
+                _raise_socket_error("socket() failed")
 
     def connect(self, addr: tuple[str, int]) -> None:
-        host = addr[0]
-        port = addr[1]
-        rc = _connect(self.fd, host, port)
+        host: str = addr[0]
+        port: int = addr[1]
+        rc: int = _connect(self.fd, host, port)
         if rc < 0:
             _raise_socket_error(host)
 
+    def bind(self, addr: tuple[str, int]) -> None:
+        host: str = addr[0]
+        port: int = addr[1]
+        rc: int = _bind(self.fd, host, port)
+        if rc < 0:
+            _raise_socket_error("bind failed")
+
+    def listen(self, backlog: int) -> None:
+        rc: int = _listen(self.fd, backlog)
+        if rc < 0:
+            _raise_socket_error("listen failed")
+
+    # Accept a pending connection. Returns (conn_socket, (host, port)).
+    def accept(self) -> tuple[Socket, tuple[str, int]]:
+        new_fd: int = _accept(self.fd)
+        if new_fd < 0:
+            _raise_socket_error("accept failed")
+        host: str = _last_peer_host()
+        port: int = _last_peer_port()
+        conn: Socket = Socket(-1, -1)
+        conn.family = self.family
+        conn.type = self.type
+        conn.fd = new_fd
+        addr: tuple[str, int] = (host, port)
+        return (conn, addr)
+
+    def shutdown(self, how: int) -> None:
+        rc: int = _shutdown(self.fd, how)
+        if rc < 0:
+            _raise_socket_error("shutdown failed")
+
     def send(self, data: bytes) -> int:
-        n = _send(self.fd, data)
+        n: int = _send(self.fd, data)
         if n < 0:
             _raise_socket_error("send failed")
         return n
 
+    # CPython's sendall returns None on success and raises on partial
+    # failure. _send already loops internally, so success means everything
+    # made it onto the wire.
+    def sendall(self, data: bytes) -> None:
+        n: int = _send(self.fd, data)
+        if n < 0:
+            _raise_socket_error("sendall failed")
+
     def recv(self, n: int) -> bytes:
-        data = _recv(self.fd, n)
-        cls = _last_error_class()
+        data: bytes = _recv(self.fd, n)
+        cls: int = _last_error_class()
         if cls != 0:
             _raise_socket_error("recv failed")
         return data
 
+    def sendto(self, data: bytes, addr: tuple[str, int]) -> int:
+        host: str = addr[0]
+        port: int = addr[1]
+        n: int = _sendto(self.fd, data, host, port)
+        if n < 0:
+            _raise_socket_error("sendto failed")
+        return n
+
+    def recvfrom(self, n: int) -> tuple[bytes, tuple[str, int]]:
+        data: bytes = _recvfrom(self.fd, n)
+        cls: int = _last_error_class()
+        if cls != 0:
+            _raise_socket_error("recvfrom failed")
+        host: str = _last_peer_host()
+        port: int = _last_peer_port()
+        addr: tuple[str, int] = (host, port)
+        return (data, addr)
+
+    def getsockname(self) -> tuple[str, int]:
+        rc: int = _getsockname(self.fd)
+        if rc < 0:
+            _raise_socket_error("getsockname failed")
+        host: str = _last_peer_host()
+        port: int = _last_peer_port()
+        return (host, port)
+
+    def getpeername(self) -> tuple[str, int]:
+        rc: int = _getpeername(self.fd)
+        if rc < 0:
+            _raise_socket_error("getpeername failed")
+        host: str = _last_peer_host()
+        port: int = _last_peer_port()
+        return (host, port)
+
+    def setsockopt(self, level: int, optname: int, value: int) -> None:
+        rc: int = _setsockopt_int(self.fd, level, optname, value)
+        if rc < 0:
+            _raise_socket_error("setsockopt failed")
+
+    def getsockopt(self, level: int, optname: int) -> int:
+        v: int = _getsockopt_int(self.fd, level, optname)
+        cls: int = _last_error_class()
+        if cls != 0:
+            _raise_socket_error("getsockopt failed")
+        return v
+
+    def setblocking(self, flag: bool) -> None:
+        f: int = 0
+        if flag:
+            f = 1
+        rc: int = _setblocking(self.fd, f)
+        if rc < 0:
+            _raise_socket_error("setblocking failed")
+
+    # seconds < 0 -> revert to plain blocking. seconds == 0 -> non-blocking.
+    # seconds > 0 -> set SO_RCVTIMEO and SO_SNDTIMEO.
+    def settimeout(self, seconds: float) -> None:
+        rc: int = _settimeout(self.fd, seconds)
+        if rc < 0:
+            _raise_socket_error("settimeout failed")
+
+    def fileno(self) -> int:
+        return self.fd
+
     def close(self) -> None:
-        _close(self.fd)
+        if self.fd >= 0:
+            _close(self.fd)
+            self.fd = -1
+
 
 # Factory matching Python's socket.socket(family, type).
 def socket(family: int, type: int) -> Socket:
     return Socket(family, type)
+
+
+def gethostname() -> str:
+    return _gethostname()
+
+
+def gethostbyname(host: str) -> str:
+    name: str = _gethostbyname(host)
+    cls: int = _last_error_class()
+    if cls != 0:
+        _raise_socket_error(host)
+    return name

@@ -21,8 +21,10 @@ const builtinsModuleID = "builtins"
 // without each module creating its own (incompatible) Exception hierarchy.
 //
 // Matches CPython's exception tree where it matters (ArithmeticError wraps
-// ZeroDivisionError; LookupError wraps IndexError/KeyError; everything
-// derives from Exception). Each class carries a single `msg: str` field.
+// ZeroDivisionError; LookupError wraps IndexError/KeyError; ConnectionError
+// wraps ConnectionRefusedError/ConnectionResetError/ConnectionAbortedError/
+// BrokenPipeError; everything derives from Exception). Each class carries a
+// single `msg: str` field.
 const builtinExceptionsSource = `class Exception:
     def __init__(self, msg: str):
         self.msg = msg
@@ -87,7 +89,31 @@ class IsADirectoryError(OSError):
     def __init__(self, msg: str):
         super().__init__(msg)
 
-class ConnectionRefusedError(OSError):
+class TimeoutError(OSError):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+class BlockingIOError(OSError):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+class ConnectionError(OSError):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+class ConnectionRefusedError(ConnectionError):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+class ConnectionResetError(ConnectionError):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+class ConnectionAbortedError(ConnectionError):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+class BrokenPipeError(ConnectionError):
     def __init__(self, msg: str):
         super().__init__(msg)
 `

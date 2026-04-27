@@ -1,0 +1,19 @@
+from socket import socket, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR, SO_KEEPALIVE
+
+s = socket(AF_INET, SOCK_STREAM)
+
+s.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+v = s.getsockopt(SOL_SOCKET, SO_REUSEADDR)
+if v != 0:
+    print("reuseaddr on")
+else:
+    print("reuseaddr off")
+
+s.setsockopt(SOL_SOCKET, SO_KEEPALIVE, 1)
+v = s.getsockopt(SOL_SOCKET, SO_KEEPALIVE)
+if v != 0:
+    print("keepalive on")
+else:
+    print("keepalive off")
+
+s.close()
