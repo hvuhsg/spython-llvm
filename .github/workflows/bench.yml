@@ -1,0 +1,91 @@
+name: bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Number of timed runs per (program, runtime)"
+        required: false
+        default: "5"
+      warmup:
+        description: "Warmup runs before measuring"
+        required: false
+        default: "1"
+
+jobs:
+  bench:
+    name: bench (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: Install clang, bdwgc, hyperfine, pypy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libgc-dev hyperfine pypy3
+          python3 --version
+          pypy3 --version
+
+      - name: Build spython compiler
+        run: go build -o spython ./cmd/spython
+
+      - name: Compile benchmark binaries with spython
+        run: |
+          mkdir -p bench-bin
+          for prog in nbody fib mandelbrot; do
+            ./spython build -o "bench-bin/${prog}" "benchmarks/${prog}.spy"
+          done
+          ls -la bench-bin/
+
+      - name: Run benchmarks
+        env:
+          RUNS: ${{ inputs.runs }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          mkdir -p bench-results
+          summary="$GITHUB_STEP_SUMMARY"
+          echo "# Benchmark results" >> "$summary"
+          echo "" >> "$summary"
+          echo "Runs per cell: ${RUNS}, warmup: ${WARMUP}" >> "$summary"
+          echo "" >> "$summary"
+          echo "spython runs the pre-compiled native binary; cpython and pypy3 interpret the same .spy source." >> "$summary"
+          echo "" >> "$summary"
+          echo "| program | spython | cpython | pypy3 | cpython / spython | pypy3 / spython |" >> "$summary"
+          echo "|---|---|---|---|---|---|" >> "$summary"
+
+          for prog in nbody fib mandelbrot; do
+            f="benchmarks/${prog}.spy"
+            bin="bench-bin/${prog}"
+            json="bench-results/${prog}.json"
+
+            hyperfine \
+              --warmup "${WARMUP}" \
+              --runs "${RUNS}" \
+              --export-json "${json}" \
+              --command-name "spython"  "${bin}" \
+              --command-name "cpython"  "python3 ${f}" \
+              --command-name "pypy3"    "pypy3 ${f}"
+
+            sp=$(jq -r '.results[] | select(.command=="spython") | .mean'  "${json}")
+            cp=$(jq -r '.results[] | select(.command=="cpython") | .mean'  "${json}")
+            pp=$(jq -r '.results[] | select(.command=="pypy3")   | .mean'  "${json}")
+
+            ratio_cp=$(awk -v a="${cp}" -v b="${sp}" 'BEGIN { printf "%.2fx", a/b }')
+            ratio_pp=$(awk -v a="${pp}" -v b="${sp}" 'BEGIN { printf "%.2fx", a/b }')
+            sp_ms=$(awk -v v="${sp}" 'BEGIN { printf "%.0f", v*1000 }')
+            cp_ms=$(awk -v v="${cp}" 'BEGIN { printf "%.0f", v*1000 }')
+            pp_ms=$(awk -v v="${pp}" 'BEGIN { printf "%.0f", v*1000 }')
+
+            echo "| ${prog} | ${sp_ms} ms | ${cp_ms} ms | ${pp_ms} ms | ${ratio_cp} | ${ratio_pp} |" >> "$summary"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results/

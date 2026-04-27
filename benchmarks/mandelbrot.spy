@@ -1,0 +1,27 @@
+def mandel(cx: float, cy: float) -> int:
+    x: float = 0.0
+    y: float = 0.0
+    i: int = 0
+    while i < 1000:
+        x2: float = x * x
+        y2: float = y * y
+        if x2 + y2 > 4.0:
+            return i
+        y = 2.0 * x * y + cy
+        x = x2 - y2 + cx
+        i = i + 1
+    return 1000
+
+
+total: int = 0
+py: int = 0
+while py < 200:
+    px: int = 0
+    while px < 200:
+        cx: float = (float(px) / 200.0) * 3.5 - 2.5
+        cy: float = (float(py) / 200.0) * 2.0 - 1.0
+        total = total + mandel(cx, cy)
+        px = px + 1
+    py = py + 1
+
+print(total)
