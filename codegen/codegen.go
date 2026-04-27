@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/yehoyadashtinmetz/spython/parser"
@@ -1379,7 +1380,10 @@ func (g *Generator) emitExpr(expr parser.Expr) (string, error) {
 		return fmt.Sprintf("%d", e.Value), nil
 
 	case *parser.FloatLit:
-		return fmt.Sprintf("%e", e.Value), nil
+		// Emit as LLVM's exact hex form so the literal round-trips bit-for-bit.
+		// `%e` would round to 7 significant digits and lose precision for values
+		// like math.pi or DBL_MAX.
+		return fmt.Sprintf("0x%016X", math.Float64bits(e.Value)), nil
 
 	case *parser.BoolLit:
 		if e.Value {
