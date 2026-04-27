@@ -137,9 +137,8 @@ func build(file, output string) error {
 	args := []string{"-O2", "-o", output, tmpIR.Name(), runtimePath}
 	args = append(args, cFiles...)
 	runtimeDir := filepath.Dir(runtimePath)
-	args = append(args, "-I"+runtimeDir)
+	args = append(args, "-I"+runtimeDir, "-Wno-override-module")
 	if runtime.GOOS == "darwin" {
-		args = append(args, "-Wno-override-module")
 		for _, prefix := range []string{"/opt/homebrew/opt/bdw-gc", "/usr/local/opt/bdw-gc"} {
 			if _, err := os.Stat(filepath.Join(prefix, "include", "gc.h")); err == nil {
 				args = append(args, "-I"+filepath.Join(prefix, "include"), "-L"+filepath.Join(prefix, "lib"))
