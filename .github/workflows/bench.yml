@@ -38,7 +38,7 @@ jobs:
       - name: Compile benchmark binaries with spython
         run: |
           mkdir -p bench-bin
-          for prog in nbody fib mandelbrot; do
+          for prog in nbody fib mandelbrot binary_trees spectral_norm fannkuch polymorphism matmul quicksort; do
             ./spython build -o "bench-bin/${prog}" "benchmarks/${prog}.spy"
           done
           ls -la bench-bin/
@@ -59,7 +59,7 @@ jobs:
           echo "| program | spython | cpython | pypy3 | cpython / spython | pypy3 / spython |" >> "$summary"
           echo "|---|---|---|---|---|---|" >> "$summary"
 
-          for prog in nbody fib mandelbrot; do
+          for prog in nbody fib mandelbrot binary_trees spectral_norm fannkuch polymorphism matmul quicksort; do
             f="benchmarks/${prog}.spy"
             bin="bench-bin/${prog}"
             json="bench-results/${prog}.json"
