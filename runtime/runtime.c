@@ -353,6 +353,15 @@ int64_t spy_map_len(const char *map_ptr) {
     return map->len;
 }
 
+void spy_map_extend(char *dst_ptr, const char *src_ptr) {
+    SpyMap *src = (SpyMap*)src_ptr;
+    for (int64_t i = 0; i < src->cap; i++) {
+        if (src->entries[i].occupied) {
+            spy_map_set(dst_ptr, src->entries[i].key, src->entries[i].value);
+        }
+    }
+}
+
 static void map_resize(SpyMap *map) {
     int64_t old_cap = map->cap;
     MapEntry *old_entries = map->entries;

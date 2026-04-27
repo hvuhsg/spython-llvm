@@ -96,6 +96,7 @@ void spy_map_set(char *map, const char *key, const char *val);
 char* spy_map_get(const char *map, const char *key);
 int spy_map_contains(const char *map, const char *key);
 int64_t spy_map_len(const char *map);
+void spy_map_extend(char *dst, const char *src);
 
 // Conversion functions
 char* spy_int_to_str(int64_t x);
