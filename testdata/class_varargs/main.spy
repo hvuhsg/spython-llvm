@@ -1,0 +1,24 @@
+class Group:
+    def __init__(self, label: str, *items: int) -> None:
+        self.label = label
+        total: int = 0
+        for it in items:
+            total = total + it
+        self.total = total
+
+    def show(self, *more: int) -> int:
+        extra: int = 0
+        for x in more:
+            extra = extra + x
+        print(self.label, self.total, extra)
+        return self.total + extra
+
+
+g: Group = Group("alpha", 1, 2, 3)
+print(g.label)
+print(g.total)
+print(g.show())
+print(g.show(10, 20))
+
+h: Group = Group("beta")
+print(h.total)

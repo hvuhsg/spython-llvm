@@ -1,0 +1,24 @@
+def total(*xs: int) -> int:
+    s: int = 0
+    for x in xs:
+        s = s + x
+    return s
+
+nums: list[int] = [10, 20, 30]
+print(total(*nums))
+print(total(1, *nums, 100))
+
+def kw_count(**kw: int) -> int:
+    return len(kw)
+
+extra: map[str, int] = {"a": 1, "b": 2}
+print(kw_count(**extra))
+print(kw_count(c=3, **extra))
+
+def both(label: str, *xs: int, **kw: int) -> None:
+    s: int = 0
+    for x in xs:
+        s = s + x
+    print(label, s, len(kw))
+
+both("v", *nums, **extra)

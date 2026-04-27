@@ -1,0 +1,21 @@
+def add(a: int, b: int = 10) -> int:
+    return a + b
+
+def greet(name: str, greeting: str = "hello") -> None:
+    print(greeting, name)
+
+def withkw(*xs: int, mode: str = "fast") -> None:
+    print(mode, len(xs))
+
+def computed(x: int = 1 + 2) -> int:
+    return x
+
+print(add(5))
+print(add(5, 20))
+print(add(5, b=100))
+greet("ada")
+greet("ada", greeting="hi")
+withkw(1, 2, 3)
+withkw(1, 2, mode="slow")
+print(computed())
+print(computed(7))

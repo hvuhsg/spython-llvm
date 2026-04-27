@@ -1,0 +1,13 @@
+def inner(n: int) -> Iterator[int]:
+    i: int = 0
+    while i < n:
+        yield i
+        i = i + 1
+
+def outer() -> Iterator[int]:
+    yield 100
+    yield from inner(3)
+    yield 200
+
+for x in outer():
+    print(x)

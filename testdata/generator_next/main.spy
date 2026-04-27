@@ -1,0 +1,9 @@
+def values() -> Iterator[int]:
+    yield 10
+    yield 20
+    yield 30
+
+g: Iterator[int] = values()
+print(next(g))
+print(next(g))
+print(next(g))

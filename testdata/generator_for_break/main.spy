@@ -1,0 +1,15 @@
+def naturals() -> Iterator[int]:
+    i: int = 0
+    while True:
+        yield i
+        i = i + 1
+
+count: int = 0
+for x in naturals():
+    if x >= 5:
+        break
+    print(x)
+    count = count + 1
+
+print("count:")
+print(count)

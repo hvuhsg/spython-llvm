@@ -1,0 +1,15 @@
+def sum_all(*nums: int) -> int:
+    total: int = 0
+    for n in nums:
+        total = total + n
+    return total
+
+print(sum_all())
+print(sum_all(7))
+print(sum_all(1, 2, 3, 4, 5))
+
+def log_each(prefix: str, *items: int) -> None:
+    for it in items:
+        print(prefix, it)
+
+log_each("v", 10, 20, 30)
