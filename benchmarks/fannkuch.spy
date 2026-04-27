@@ -1,0 +1,66 @@
+def reverse_prefix(perm: list[int], k: int) -> None:
+    i: int = 0
+    j: int = k - 1
+    while i < j:
+        tmp: int = perm[i]
+        perm[i] = perm[j]
+        perm[j] = tmp
+        i = i + 1
+        j = j - 1
+
+
+def count_flips(perm_in: list[int], scratch: list[int], n: int) -> int:
+    i: int = 0
+    while i < n:
+        scratch[i] = perm_in[i]
+        i = i + 1
+    flips: int = 0
+    while scratch[0] != 0:
+        reverse_prefix(scratch, scratch[0] + 1)
+        flips = flips + 1
+    return flips
+
+
+def fannkuch(n: int) -> int:
+    perm: list[int] = []
+    scratch: list[int] = []
+    c: list[int] = []
+    i: int = 0
+    while i < n:
+        perm.append(i)
+        scratch.append(0)
+        c.append(0)
+        i = i + 1
+
+    max_flips: int = count_flips(perm, scratch, n)
+
+    i = 1
+    while i < n:
+        if c[i] < i:
+            if i % 2 == 0:
+                tmp: int = perm[0]
+                perm[0] = perm[i]
+                perm[i] = tmp
+            else:
+                k: int = c[i]
+                tmp2: int = perm[k]
+                perm[k] = perm[i]
+                perm[i] = tmp2
+            f: int = count_flips(perm, scratch, n)
+            if f > max_flips:
+                max_flips = f
+            c[i] = c[i] + 1
+            i = 0
+        else:
+            c[i] = 0
+            i = i + 1
+
+    return max_flips
+
+
+total: int = 0
+iter: int = 0
+while iter < 20:
+    total = total + fannkuch(8)
+    iter = iter + 1
+print(total)
