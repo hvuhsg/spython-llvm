@@ -209,3 +209,54 @@ char *spy_os__listdir_entry(int64_t i) {
     const char *s = spy_os_dir_entries[i];
     return spy_str_new(s, (int64_t)strlen(s));
 }
+
+// ----- Environment / process -----
+
+int64_t spy_os__setenv(const char *name_spy, const char *value_spy) {
+    char name[1024], value[4096];
+    if (spy_os_to_cstr(name_spy, name, sizeof(name)) != 0 ||
+        spy_os_to_cstr(value_spy, value, sizeof(value)) != 0) {
+        spy_os_last_err = 4;
+        return -1;
+    }
+    if (setenv(name, value, 1) != 0) {
+        spy_os_record_errno();
+        return -1;
+    }
+    spy_os_last_err = 0;
+    return 0;
+}
+
+int64_t spy_os__unsetenv(const char *name_spy) {
+    char name[1024];
+    if (spy_os_to_cstr(name_spy, name, sizeof(name)) != 0) {
+        spy_os_last_err = 4;
+        return -1;
+    }
+    if (unsetenv(name) != 0) {
+        spy_os_record_errno();
+        return -1;
+    }
+    spy_os_last_err = 0;
+    return 0;
+}
+
+// CPython's os.umask returns the previous mask and never raises.
+int64_t spy_os_umask(int64_t mask) {
+    mode_t prev = umask((mode_t)mask);
+    return (int64_t)prev;
+}
+
+int64_t spy_os_cpu_count(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n <= 0) return 1;
+    return (int64_t)n;
+}
+
+int64_t spy_os_access(const char *path_spy, int64_t mode) {
+    char path[4096];
+    if (spy_os_to_cstr(path_spy, path, sizeof(path)) != 0) {
+        return 0;
+    }
+    return access(path, (int)mode) == 0 ? 1 : 0;
+}

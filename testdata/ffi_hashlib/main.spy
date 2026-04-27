@@ -13,3 +13,23 @@ print(hashlib.sha256(b"The quick brown fox jumps over the lazy dog"))
 
 # Binary input — bytes with null and high bits. Known SHA-256 of \x00\x01\x02\x03.
 print(hashlib.sha256(b"\x00\x01\x02\x03"))
+
+# SHA-224.
+print(hashlib.sha224(b""))
+print(hashlib.sha224(b"abc"))
+print(hashlib.sha224(b"The quick brown fox jumps over the lazy dog"))
+
+# SHA-384.
+print(hashlib.sha384(b""))
+print(hashlib.sha384(b"abc"))
+print(hashlib.sha384(b"The quick brown fox jumps over the lazy dog"))
+
+# SHA-512.
+print(hashlib.sha512(b""))
+print(hashlib.sha512(b"abc"))
+print(hashlib.sha512(b"The quick brown fox jumps over the lazy dog"))
+
+# A long input that crosses the 128-byte block boundary in SHA-512 and the
+# 64-byte boundary in SHA-256 — exercises multi-block paths.
+print(hashlib.sha256(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))
+print(hashlib.sha512(b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"))

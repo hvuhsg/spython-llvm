@@ -37,3 +37,38 @@ print(len(names))
 # Cleanup.
 os.rmdir(base)
 print(os._stat_mode(base))  # -1 (ENOENT after removal)
+
+# ----- Constants and metadata -----
+print(os.sep)
+print(os.linesep)
+print(os.pathsep)
+print(os.name)
+print(os.curdir)
+print(os.pardir)
+print(os.devnull)
+
+# F_OK is 0; the order R_OK > W_OK > X_OK > F_OK ensures the bit values
+# don't collide.
+print(os.F_OK)
+print(os.X_OK)
+print(os.W_OK)
+print(os.R_OK)
+
+# cpu_count is host-dependent — just check it's >= 1.
+print(os.cpu_count() >= 1)
+
+# Environment round-trip via setenv / getenv / unsetenv.
+os.setenv("SPYTHON_OS_TEST_VAR", "hello")
+print(os.getenv("SPYTHON_OS_TEST_VAR"))
+os.unsetenv("SPYTHON_OS_TEST_VAR")
+print(len(os.getenv("SPYTHON_OS_TEST_VAR")))  # 0 after unset
+
+# umask: set to a known value, restore to whatever was there before.
+prev: int = os.umask(18)   # 0o022
+restored: int = os.umask(prev)
+print(restored)             # 18 — proves we read back what we set
+
+# access: /tmp must exist and be readable for any normal account.
+print(os.access("/tmp", os.F_OK))
+print(os.access("/tmp", os.R_OK))
+print(os.access("/definitely/does/not/exist/xyz", os.F_OK))

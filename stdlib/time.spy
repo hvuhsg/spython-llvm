@@ -1,10 +1,34 @@
-# stdlib/time.spy — bindings to stdlib/time.c.
+# stdlib/time.spy — POSIX clock and sleep functions, matching CPython where
+# the signature is fixed-positional. The `*_ns` variants return integer
+# nanoseconds; the float variants are the same value scaled by 1e-9.
 
 @extern
 def time() -> float: ...
 
 @extern
+def time_ns() -> int: ...
+
+@extern
 def monotonic() -> float: ...
+
+@extern
+def monotonic_ns() -> int: ...
+
+# CPython's perf_counter is "the highest available resolution clock, suitable
+# for short measurements" and on POSIX systems it's CLOCK_MONOTONIC. We
+# bind the same way.
+@extern
+def perf_counter() -> float: ...
+
+@extern
+def perf_counter_ns() -> int: ...
+
+# process_time excludes time spent sleeping — sums user + system CPU time.
+@extern
+def process_time() -> float: ...
+
+@extern
+def process_time_ns() -> int: ...
 
 @extern
 def sleep(seconds: float) -> None: ...

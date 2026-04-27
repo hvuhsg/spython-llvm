@@ -1,8 +1,8 @@
 # stdlib/math.spy — bindings to stdlib/math.c (thin wrappers over <math.h>).
-# All functions are single-argument double->double unless noted; the C
-# implementation lives in math.c and is linked via the `// spython-link: -lm`
-# directive there.
+# Each @extern matches a CPython math function with the same name and the
+# same float -> float (or int -> int) signature unless explicitly noted.
 
+# Trig.
 @extern
 def sqrt(x: float) -> float: ...
 
@@ -27,6 +27,26 @@ def atan(x: float) -> float: ...
 @extern
 def atan2(y: float, x: float) -> float: ...
 
+# Hyperbolic.
+@extern
+def sinh(x: float) -> float: ...
+
+@extern
+def cosh(x: float) -> float: ...
+
+@extern
+def tanh(x: float) -> float: ...
+
+@extern
+def asinh(x: float) -> float: ...
+
+@extern
+def acosh(x: float) -> float: ...
+
+@extern
+def atanh(x: float) -> float: ...
+
+# Logs and exponentials.
 @extern
 def log(x: float) -> float: ...
 
@@ -37,11 +57,18 @@ def log2(x: float) -> float: ...
 def log10(x: float) -> float: ...
 
 @extern
+def log1p(x: float) -> float: ...
+
+@extern
 def exp(x: float) -> float: ...
+
+@extern
+def expm1(x: float) -> float: ...
 
 @extern
 def pow(base: float, exponent: float) -> float: ...
 
+# Rounding / sign / decomposition.
 @extern
 def floor(x: float) -> float: ...
 
@@ -49,13 +76,61 @@ def floor(x: float) -> float: ...
 def ceil(x: float) -> float: ...
 
 @extern
+def trunc(x: float) -> float: ...
+
+@extern
 def fabs(x: float) -> float: ...
 
 @extern
 def fmod(x: float, y: float) -> float: ...
 
+@extern
+def copysign(x: float, y: float) -> float: ...
+
+@extern
+def ldexp(x: float, i: int) -> float: ...
+
+# Angle conversions.
+@extern
+def degrees(x: float) -> float: ...
+
+@extern
+def radians(x: float) -> float: ...
+
+# Special functions.
+@extern
+def erf(x: float) -> float: ...
+
+@extern
+def erfc(x: float) -> float: ...
+
+@extern
+def gamma(x: float) -> float: ...
+
+@extern
+def lgamma(x: float) -> float: ...
+
+# Predicates. CPython returns Python `bool`; the C side returns 0/1 ints
+# that spython's bool casts handle automatically.
+@extern
+def isfinite(x: float) -> bool: ...
+
+@extern
+def isinf(x: float) -> bool: ...
+
+@extern
+def isnan(x: float) -> bool: ...
+
+# Integer-domain helpers.
+@extern
+def factorial(n: int) -> int: ...
+
+@extern
+def isqrt(n: int) -> int: ...
+
 # Constants. inf/nan are produced by helper externs because spython has no
-# literal syntax for them.
+# literal syntax for them; module-init time runs these once and stores the
+# result, so users see them as plain `math.inf` / `math.nan` attributes.
 @extern
 def _inf() -> float: ...
 
@@ -65,3 +140,63 @@ def _nan() -> float: ...
 pi: float = 3.141592653589793
 e: float = 2.718281828459045
 tau: float = 6.283185307179586
+inf: float = _inf()
+nan: float = _nan()
+
+
+# gcd(*ints), lcm(*ints), hypot(*coords) — pure spy. CPython's signatures
+# accept any number of args (zero is identity).
+
+def _gcd2(a: int, b: int) -> int:
+    x: int = a
+    y: int = b
+    if x < 0:
+        x = -x
+    if y < 0:
+        y = -y
+    while y != 0:
+        t: int = y
+        y = x % y
+        x = t
+    return x
+
+def gcd(*ints: int) -> int:
+    if len(ints) == 0:
+        return 0
+    g: int = ints[0]
+    if g < 0:
+        g = -g
+    i: int = 1
+    while i < len(ints):
+        g = _gcd2(g, ints[i])
+        if g == 1:
+            return 1
+        i = i + 1
+    return g
+
+def lcm(*ints: int) -> int:
+    if len(ints) == 0:
+        return 1
+    a: int = ints[0]
+    if a < 0:
+        a = -a
+    if a == 0:
+        return 0
+    i: int = 1
+    while i < len(ints):
+        b: int = ints[i]
+        if b < 0:
+            b = -b
+        if b == 0:
+            return 0
+        a = (a // _gcd2(a, b)) * b
+        i = i + 1
+    return a
+
+def hypot(*coords: float) -> float:
+    s: float = 0.0
+    i: int = 0
+    while i < len(coords):
+        s = s + coords[i] * coords[i]
+        i = i + 1
+    return sqrt(s)
