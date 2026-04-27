@@ -3,8 +3,82 @@
 #include <string.h>
 #include <stdint.h>
 #include <setjmp.h>
+#include <math.h>
 #include <gc.h>
 #include "runtime.h"
+
+// Render `x` into `buf` using a shortest round-trip representation,
+// matching CPython's repr/str for floats. `buflen` must be at least 32.
+// Returns the number of bytes written (excluding the null terminator).
+// Non-finite values render as "nan", "inf", "-inf" with no ".0" suffix.
+//
+// Picks fixed-point form when 1e-4 <= |x| < 1e16, otherwise exponential —
+// the cutoffs CPython's float_repr uses. Then chooses the shortest precision
+// that strtod round-trips back to the original double, and strips trailing
+// zeros so e.g. 0.5 prints as "0.5" not "0.50000".
+static int spy_format_float(double x, char *buf, size_t buflen) {
+    if (isnan(x)) return snprintf(buf, buflen, "nan");
+    if (isinf(x)) return snprintf(buf, buflen, x < 0 ? "-inf" : "inf");
+    if (x == 0.0) {
+        return snprintf(buf, buflen, signbit(x) ? "-0.0" : "0.0");
+    }
+
+    // Find smallest precision P (1..17) for which %.*g round-trips.
+    int precision = 17;
+    char probe[64];
+    for (int p = 1; p <= 17; p++) {
+        snprintf(probe, sizeof(probe), "%.*g", p, x);
+        if (strtod(probe, NULL) == x) { precision = p; break; }
+    }
+
+    double ax = fabs(x);
+    int len;
+    if (ax >= 1e-4 && ax < 1e16) {
+        // Fixed form: render with %.*f using enough fractional digits to keep
+        // `precision` significant digits, then strip trailing zeros.
+        int exp10 = (int)floor(log10(ax));
+        int frac = precision - 1 - exp10;
+        if (frac < 0) frac = 0;
+        len = snprintf(buf, buflen, "%.*f", frac, x);
+        char *dot = strchr(buf, '.');
+        if (dot) {
+            char *end = buf + len - 1;
+            while (end > dot + 1 && *end == '0') {
+                *end-- = '\0';
+                len--;
+            }
+        }
+    } else {
+        // Exponential form: %.*e then strip trailing zeros from the mantissa.
+        len = snprintf(buf, buflen, "%.*e", precision - 1, x);
+        char *e = strchr(buf, 'e');
+        if (e) {
+            char *end = e - 1;
+            while (end > buf && *end == '0') end--;
+            if (*end == '.') end--;
+            // Shift the "e+NN" suffix down to right after the trimmed mantissa.
+            size_t suffix_len = strlen(e);
+            memmove(end + 1, e, suffix_len + 1);
+            len = (int)strlen(buf);
+        }
+    }
+
+    // Ensure ".0" suffix when there's no decimal or exponent marker so that
+    // an integer-valued float like 10.0 doesn't print as "10".
+    int has_marker = 0;
+    for (int i = 0; i < len; i++) {
+        if (buf[i] == '.' || buf[i] == 'e' || buf[i] == 'E') {
+            has_marker = 1;
+            break;
+        }
+    }
+    if (!has_marker && (size_t)(len + 3) <= buflen) {
+        buf[len++] = '.';
+        buf[len++] = '0';
+        buf[len] = '\0';
+    }
+    return len;
+}
 
 // ==================== Initialization ====================
 
@@ -87,7 +161,9 @@ void spy_print_int(int64_t x) {
 }
 
 void spy_print_float(double x) {
-    printf("%g", x);
+    char buf[64];
+    spy_format_float(x, buf, sizeof(buf));
+    fputs(buf, stdout);
 }
 
 void spy_print_bool(int x) {
@@ -387,7 +463,7 @@ char* spy_int_to_str(int64_t x) {
 
 char* spy_float_to_str(double x) {
     char buf[64];
-    int len = snprintf(buf, sizeof(buf), "%g", x);
+    int len = spy_format_float(x, buf, sizeof(buf));
     return spy_str_new(buf, len);
 }
 

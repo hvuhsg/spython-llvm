@@ -1,0 +1,110 @@
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach artifacts to"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: freebsd
+            goarch: amd64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+          else
+            tag="${{ inputs.tag }}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Build compiler
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          ext=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
+          go build -trimpath -ldflags "-s -w" \
+            -o "dist/spython${ext}" ./cmd/spython
+
+      - name: Stage release bundle
+        id: bundle
+        run: |
+          tag="${{ steps.ver.outputs.tag }}"
+          name="spython-${tag}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          stage="dist/${name}"
+          mkdir -p "${stage}"
+          ext=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
+          cp "dist/spython${ext}" "${stage}/"
+          cp -R runtime "${stage}/runtime"
+          cp -R stdlib "${stage}/stdlib"
+          cp README.md "${stage}/"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "stage=${stage}" >> "$GITHUB_OUTPUT"
+
+      - name: Archive (zip)
+        if: matrix.goos == 'windows'
+        run: |
+          cd dist && zip -r "${{ steps.bundle.outputs.name }}.zip" "${{ steps.bundle.outputs.name }}"
+
+      - name: Archive (tar.gz)
+        if: matrix.goos != 'windows'
+        run: |
+          cd dist && tar -czf "${{ steps.bundle.outputs.name }}.tar.gz" "${{ steps.bundle.outputs.name }}"
+
+      - name: Checksums
+        run: |
+          cd dist
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            sha256sum "${{ steps.bundle.outputs.name }}.zip" > "${{ steps.bundle.outputs.name }}.zip.sha256"
+          else
+            sha256sum "${{ steps.bundle.outputs.name }}.tar.gz" > "${{ steps.bundle.outputs.name }}.tar.gz.sha256"
+          fi
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          files: |
+            dist/${{ steps.bundle.outputs.name }}.tar.gz
+            dist/${{ steps.bundle.outputs.name }}.tar.gz.sha256
+            dist/${{ steps.bundle.outputs.name }}.zip
+            dist/${{ steps.bundle.outputs.name }}.zip.sha256
+          fail_on_unmatched_files: false

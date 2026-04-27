@@ -1,0 +1,14 @@
+class Tree:
+    def __init__(self):
+        self.depth: int = 0
+        self.label: str = "root"
+
+    def grow(self, n: int):
+        self.depth = self.depth + n
+
+
+t = Tree()
+print(t.depth)
+print(t.label)
+t.grow(3)
+print(t.depth)

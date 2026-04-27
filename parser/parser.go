@@ -116,20 +116,44 @@ func (p *Parser) parseStatement() (Stmt, error) {
 		}, nil
 	}
 
-	// Check for attribute assignment: obj.attr = value
-	if attr, ok := expr.(*AttrExpr); ok && p.peek().Type == lexer.TOKEN_ASSIGN {
-		p.advance() // consume =
-		value, err := p.parseExpr(0)
-		if err != nil {
-			return nil, err
+	// Check for attribute assignment: obj.attr = value or obj.attr: T = value
+	if attr, ok := expr.(*AttrExpr); ok {
+		if p.peek().Type == lexer.TOKEN_ASSIGN {
+			p.advance() // consume =
+			value, err := p.parseExpr(0)
+			if err != nil {
+				return nil, err
+			}
+			p.consumeNewline()
+			return &AttrAssignStmt{
+				Pos:    attr.Pos,
+				Object: attr.Object,
+				Attr:   attr.Attr,
+				Value:  value,
+			}, nil
 		}
-		p.consumeNewline()
-		return &AttrAssignStmt{
-			Pos:    attr.Pos,
-			Object: attr.Object,
-			Attr:   attr.Attr,
-			Value:  value,
-		}, nil
+		if p.peek().Type == lexer.TOKEN_COLON {
+			p.advance() // consume :
+			typeAnn, err := p.parseTypeAnnotation()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expect(lexer.TOKEN_ASSIGN); err != nil {
+				return nil, err
+			}
+			value, err := p.parseExpr(0)
+			if err != nil {
+				return nil, err
+			}
+			p.consumeNewline()
+			return &AttrAssignStmt{
+				Pos:     attr.Pos,
+				Object:  attr.Object,
+				Attr:    attr.Attr,
+				TypeAnn: typeAnn,
+				Value:   value,
+			}, nil
+		}
 	}
 
 	// Check for reassignment: ident = expr (without type annotation)
@@ -288,10 +312,12 @@ func (p *Parser) parseTypeAnnotation() (*TypeAnnotation, error) {
 				return nil, err
 			}
 			ann.Params = append(ann.Params, param)
-			if p.peek().Type == lexer.TOKEN_COMMA {
-				p.advance()
-			} else {
+			if p.peek().Type != lexer.TOKEN_COMMA {
 				break
+			}
+			p.advance()
+			if p.peek().Type == lexer.TOKEN_RBRACK {
+				break // trailing comma
 			}
 		}
 		if err := p.expect(lexer.TOKEN_RBRACK); err != nil {
@@ -475,6 +501,9 @@ func (p *Parser) parsePostfix() (Expr, error) {
 						break
 					}
 					p.advance()
+					if p.peek().Type == lexer.TOKEN_RPAREN {
+						break // trailing comma
+					}
 				}
 			}
 			if err := p.expect(lexer.TOKEN_RPAREN); err != nil {
@@ -635,6 +664,9 @@ func (p *Parser) parseListLit() (Expr, error) {
 				break
 			}
 			p.advance()
+			if p.peek().Type == lexer.TOKEN_RBRACK {
+				break // trailing comma
+			}
 		}
 	}
 	if err := p.expect(lexer.TOKEN_RBRACK); err != nil {
@@ -666,6 +698,9 @@ func (p *Parser) parseMapLit() (Expr, error) {
 				break
 			}
 			p.advance()
+			if p.peek().Type == lexer.TOKEN_RBRACE {
+				break // trailing comma
+			}
 		}
 	}
 	if err := p.expect(lexer.TOKEN_RBRACE); err != nil {
@@ -877,6 +912,9 @@ func (p *Parser) parseFuncDef() (Stmt, error) {
 				break
 			}
 			p.advance()
+			if p.peek().Type == lexer.TOKEN_RPAREN {
+				break // trailing comma
+			}
 		}
 	}
 

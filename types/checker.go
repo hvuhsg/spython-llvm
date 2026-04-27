@@ -617,16 +617,24 @@ func (c *Checker) inferFieldsFromStmts(ct *ClassType, stmts []parser.Stmt) error
 			if err != nil {
 				return err
 			}
+			declaredType := valType
+			if s.TypeAnn != nil {
+				declaredType = c.resolveTypeAnnotation(s.TypeAnn)
+				if !IsAssignable(valType, declaredType) {
+					return fmt.Errorf("%d:%d: cannot assign %s to field %s.%s of type %s",
+						s.Pos.Line, s.Pos.Col, valType, ct.Name, s.Attr, declaredType)
+				}
+			}
 			if idx, already := ct.FieldIdx[s.Attr]; already {
-				if !ct.Fields[idx].Type.Equals(valType) {
+				if !ct.Fields[idx].Type.Equals(declaredType) {
 					return fmt.Errorf("%d:%d: field %s.%s already has type %s; cannot reassign %s",
-						s.Pos.Line, s.Pos.Col, ct.Name, s.Attr, ct.Fields[idx].Type, valType)
+						s.Pos.Line, s.Pos.Col, ct.Name, s.Attr, ct.Fields[idx].Type, declaredType)
 				}
 				s.Object.SetResolvedType(&InstanceType{Class: ct})
 				continue
 			}
 			ct.FieldIdx[s.Attr] = len(ct.Fields)
-			ct.Fields = append(ct.Fields, ClassField{Name: s.Attr, Type: valType})
+			ct.Fields = append(ct.Fields, ClassField{Name: s.Attr, Type: declaredType})
 			s.Object.SetResolvedType(&InstanceType{Class: ct})
 		case *parser.IfStmt:
 			if _, err := c.checkExpr(s.Condition); err != nil {

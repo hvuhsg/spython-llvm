@@ -1,0 +1,73 @@
+class Shape:
+    def __init__(self):
+        self.kind = 0
+
+    def area(self) -> float:
+        return 0.0
+
+
+class Circle(Shape):
+    def __init__(self, r: float):
+        super().__init__()
+        self.kind = 1
+        self.r = r
+
+    def area(self) -> float:
+        return 3.141592653589793 * self.r * self.r
+
+
+class Square(Shape):
+    def __init__(self, s: float):
+        super().__init__()
+        self.kind = 2
+        self.s = s
+
+    def area(self) -> float:
+        return self.s * self.s
+
+
+class Rect(Shape):
+    def __init__(self, w: float, h: float):
+        super().__init__()
+        self.kind = 3
+        self.w = w
+        self.h = h
+
+    def area(self) -> float:
+        return self.w * self.h
+
+
+def make_shapes(n: int) -> list[Shape]:
+    out: list[Shape] = []
+    i: int = 0
+    while i < n:
+        m: int = i % 3
+        if m == 0:
+            out.append(Circle(float(i) * 0.5 + 1.0))
+        else:
+            if m == 1:
+                out.append(Square(float(i) * 0.25 + 1.0))
+            else:
+                out.append(Rect(float(i) * 0.1 + 1.0, float(i) * 0.2 + 1.0))
+        i = i + 1
+    return out
+
+
+def sum_areas(shapes: list[Shape]) -> float:
+    s: float = 0.0
+    n: int = len(shapes)
+    i: int = 0
+    while i < n:
+        s = s + shapes[i].area()
+        i = i + 1
+    return s
+
+
+shapes: list[Shape] = make_shapes(1000)
+total: float = 0.0
+iter: int = 0
+while iter < 20000:
+    total = total + sum_areas(shapes)
+    iter = iter + 1
+
+print(total)
