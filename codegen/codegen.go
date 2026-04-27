@@ -22,6 +22,13 @@ type ModuleInput struct {
 
 type Generator struct {
 	buf          strings.Builder
+	// While inside a function, body emits go to funcBody and alloca
+	// instructions go to funcAllocas. After the function finishes, the
+	// allocas are written before the body so every alloca lives in the
+	// entry block — otherwise allocas inside loops accumulate stack
+	// space across iterations and cause stack overflow on hot loops.
+	funcBody     *strings.Builder
+	funcAllocas  *strings.Builder
 	tmpCounter   int
 	lblCounter   int
 	vars         map[string]varInfo
@@ -224,6 +231,7 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 
 	g.emitLine("define i32 @main(i32 %argc, i8** %argv) {")
 	g.emitLine("entry:")
+	oldBody, oldAllocas := g.beginFunc()
 	g.emitLine("  call void @spy_init()")
 	// Publish argc/argv for sys.argv() et al. The runtime keeps them as
 	// globals; no cost if sys isn't imported.
@@ -251,6 +259,7 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 	}
 
 	g.emitLine("  ret i32 0")
+	g.endFunc(oldBody, oldAllocas)
 	g.emitLine("}")
 
 	return g.buf.String(), nil
@@ -375,6 +384,7 @@ func (g *Generator) emitModuleInit(m *ModuleInput) error {
 	}
 	g.emitLine(fmt.Sprintf("define void @spy_%s_init() {", m.ID))
 	g.emitLine("entry:")
+	oldBody, oldAllocas := g.beginFunc()
 
 	oldVars := g.vars
 	oldInFunc := g.inFunction
@@ -402,6 +412,7 @@ func (g *Generator) emitModuleInit(m *ModuleInput) error {
 	}
 
 	g.emitLine("  ret void")
+	g.endFunc(oldBody, oldAllocas)
 	g.emitLine("}")
 	g.emitLine("")
 
@@ -494,6 +505,7 @@ func (g *Generator) emitFuncDef(fd *parser.FuncDef) error {
 
 	g.emitLine(fmt.Sprintf("define %s @spy_%s_%s(%s) {", retLLVM, g.currentMod, fd.Name, strings.Join(params, ", ")))
 	g.emitLine("entry:")
+	oldBody, oldAllocas := g.beginFunc()
 
 	// Save state
 	oldVars := g.vars
@@ -510,7 +522,7 @@ func (g *Generator) emitFuncDef(fd *parser.FuncDef) error {
 		pType := g.resolveTypeAnnotation(p.TypeAnn)
 		llvmT := g.llvmType(pType)
 		allocaName := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", allocaName, llvmT))
+		g.emitAlloca(allocaName, llvmT)
 		g.emitLine(fmt.Sprintf("  store %s %%%s, %s* %s", llvmT, p.Name, llvmT, allocaName))
 		g.vars[p.Name] = varInfo{llvmName: allocaName, typ: pType}
 	}
@@ -527,6 +539,7 @@ func (g *Generator) emitFuncDef(fd *parser.FuncDef) error {
 	// function invalid IR.
 	g.terminateOpenBlock(retLLVM)
 
+	g.endFunc(oldBody, oldAllocas)
 	g.emitLine("}")
 
 	g.vars = oldVars
@@ -710,7 +723,7 @@ func (g *Generator) emitMethodCall(attr *parser.AttrExpr, args []parser.Expr) er
 		// Store value to a temp alloca, then pass pointer
 		elemLLVM := g.llvmType(lt.Elem)
 		tmpAlloca := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", tmpAlloca, elemLLVM))
+		g.emitAlloca(tmpAlloca, elemLLVM)
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, argVal, elemLLVM, tmpAlloca))
 		tmpCast := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", tmpCast, elemLLVM, tmpAlloca))
@@ -764,7 +777,7 @@ func (g *Generator) emitAssignStmt(s *parser.AssignStmt) error {
 	}
 	llvmT := g.llvmType(varType)
 	allocaName := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca %s", allocaName, llvmT))
+	g.emitAlloca(allocaName, llvmT)
 	g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", llvmT, val, llvmT, allocaName))
 	g.vars[s.Name] = varInfo{llvmName: allocaName, typ: varType}
 
@@ -798,7 +811,7 @@ func (g *Generator) emitMultiAssignStmt(s *parser.MultiAssignStmt) error {
 			continue
 		}
 		alloca := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", alloca, elemLLVM))
+		g.emitAlloca(alloca, elemLLVM)
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, v, elemLLVM, alloca))
 		g.vars[name] = varInfo{llvmName: alloca, typ: elemType}
 	}
@@ -890,7 +903,7 @@ func (g *Generator) emitIndexAssignStmt(s *parser.IndexAssignStmt) error {
 	case *types.ListType:
 		elemLLVM := g.llvmType(t.Elem)
 		tmpAlloca := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", tmpAlloca, elemLLVM))
+		g.emitAlloca(tmpAlloca, elemLLVM)
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, valVal, elemLLVM, tmpAlloca))
 		tmpCast := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", tmpCast, elemLLVM, tmpAlloca))
@@ -900,12 +913,12 @@ func (g *Generator) emitIndexAssignStmt(s *parser.IndexAssignStmt) error {
 		keyLLVM := g.llvmType(t.Key)
 		valLLVM := g.llvmType(t.Value)
 		keyAlloca := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", keyAlloca, keyLLVM))
+		g.emitAlloca(keyAlloca, keyLLVM)
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", keyLLVM, idxVal, keyLLVM, keyAlloca))
 		keyCast := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", keyCast, keyLLVM, keyAlloca))
 		valAlloca := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", valAlloca, valLLVM))
+		g.emitAlloca(valAlloca, valLLVM)
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", valLLVM, valVal, valLLVM, valAlloca))
 		valCast := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", valCast, valLLVM, valAlloca))
@@ -1134,7 +1147,7 @@ func (g *Generator) emitForRange(s *parser.ForStmt, rangeCall *parser.CallExpr) 
 
 	// Alloca for loop var
 	loopVar := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca i64", loopVar))
+	g.emitAlloca(loopVar, "i64")
 	g.emitLine(fmt.Sprintf("  store i64 %s, i64* %s", startVal, loopVar))
 	g.vars[s.VarName] = varInfo{llvmName: loopVar, typ: &types.IntType{}}
 
@@ -1203,13 +1216,13 @@ func (g *Generator) emitForList(s *parser.ForStmt, listVal string, lt *types.Lis
 
 	// Index variable
 	idxVar := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca i64", idxVar))
+	g.emitAlloca(idxVar, "i64")
 	g.emitLine(fmt.Sprintf("  store i64 0, i64* %s", idxVar))
 
 	// Loop variable alloca
 	elemLLVM := g.llvmType(lt.Elem)
 	loopVar := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca %s", loopVar, elemLLVM))
+	g.emitAlloca(loopVar, elemLLVM)
 	g.vars[s.VarName] = varInfo{llvmName: loopVar, typ: lt.Elem}
 
 	condLabel := g.newLabel("for.cond")
@@ -1266,11 +1279,11 @@ func (g *Generator) emitForStr(s *parser.ForStmt, strVal string) error {
 	g.emitLine(fmt.Sprintf("  %s = call i64 @spy_str_len(i8* %s)", lenVal, strVal))
 
 	idxVar := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca i64", idxVar))
+	g.emitAlloca(idxVar, "i64")
 	g.emitLine(fmt.Sprintf("  store i64 0, i64* %s", idxVar))
 
 	loopVar := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca i8*", loopVar))
+	g.emitAlloca(loopVar, "i8*")
 	g.vars[s.VarName] = varInfo{llvmName: loopVar, typ: &types.StrType{}}
 
 	condLabel := g.newLabel("for.cond")
@@ -1655,7 +1668,7 @@ func (g *Generator) emitShortCircuit(e *parser.BinaryExpr) (string, error) {
 	mergeLabel := g.newLabel("sc.merge")
 
 	resultAlloca := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca i1", resultAlloca))
+	g.emitAlloca(resultAlloca, "i1")
 
 	if e.Op == "and" {
 		g.emitLine(fmt.Sprintf("  store i1 0, i1* %s", resultAlloca))
@@ -2047,7 +2060,7 @@ func (g *Generator) emitIndexExpr(e *parser.IndexExpr) (string, error) {
 		keyLLVM := g.llvmType(t.Key)
 		valLLVM := g.llvmType(t.Value)
 		keyAlloca := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", keyAlloca, keyLLVM))
+		g.emitAlloca(keyAlloca, keyLLVM)
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", keyLLVM, idxVal, keyLLVM, keyAlloca))
 		keyCast := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", keyCast, keyLLVM, keyAlloca))
@@ -2082,7 +2095,7 @@ func (g *Generator) emitListLit(e *parser.ListLit) (string, error) {
 			val = g.castToType(val, et, listType.Elem)
 		}
 		tmpAlloca := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", tmpAlloca, elemLLVM))
+		g.emitAlloca(tmpAlloca, elemLLVM)
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, val, elemLLVM, tmpAlloca))
 		tmpCast := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", tmpCast, elemLLVM, tmpAlloca))
@@ -2120,13 +2133,13 @@ func (g *Generator) emitMapLit(e *parser.MapLit) (string, error) {
 		}
 
 		keyAlloca := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", keyAlloca, keyLLVM))
+		g.emitAlloca(keyAlloca, keyLLVM)
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", keyLLVM, keyVal, keyLLVM, keyAlloca))
 		keyCast := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", keyCast, keyLLVM, keyAlloca))
 
 		valAlloca := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", valAlloca, valLLVM))
+		g.emitAlloca(valAlloca, valLLVM)
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", valLLVM, valVal, valLLVM, valAlloca))
 		valCast := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", valCast, valLLVM, valAlloca))
@@ -2284,8 +2297,49 @@ func (g *Generator) newLabel(prefix string) string {
 }
 
 func (g *Generator) emitLine(line string) {
+	if g.funcBody != nil {
+		g.funcBody.WriteString(line)
+		g.funcBody.WriteString("\n")
+		return
+	}
 	g.buf.WriteString(line)
 	g.buf.WriteString("\n")
+}
+
+// emitAlloca emits `name = alloca llvmType` into the function's entry-block
+// alloca buffer when one is active, otherwise inline. Allocas must live in
+// the entry block: a dynamic alloca inside a loop is allocated on every
+// iteration but only freed when the function returns, so a hot loop will
+// blow the stack. Use this helper instead of writing the alloca inline.
+func (g *Generator) emitAlloca(name, llvmType string) {
+	line := fmt.Sprintf("  %s = alloca %s\n", name, llvmType)
+	if g.funcAllocas != nil {
+		g.funcAllocas.WriteString(line)
+		return
+	}
+	g.buf.WriteString(line)
+}
+
+// beginFunc swaps in fresh body/alloca buffers for the function currently
+// being emitted. The caller is expected to have already written the
+// `define ... {` and `entry:` lines into g.buf. Returns the previous
+// buffer pointers so endFunc can restore them.
+func (g *Generator) beginFunc() (*strings.Builder, *strings.Builder) {
+	oldBody := g.funcBody
+	oldAllocas := g.funcAllocas
+	g.funcBody = &strings.Builder{}
+	g.funcAllocas = &strings.Builder{}
+	return oldBody, oldAllocas
+}
+
+// endFunc finishes the currently emitting function: writes the alloca
+// buffer (entry-block allocas) followed by the body buffer to g.buf, and
+// restores the previous buffer pointers.
+func (g *Generator) endFunc(oldBody, oldAllocas *strings.Builder) {
+	g.buf.WriteString(g.funcAllocas.String())
+	g.buf.WriteString(g.funcBody.String())
+	g.funcBody = oldBody
+	g.funcAllocas = oldAllocas
 }
 
 func (g *Generator) collectStringsInStmt(stmt parser.Stmt) {

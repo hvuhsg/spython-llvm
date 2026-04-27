@@ -154,6 +154,7 @@ func (g *Generator) emitMethodFuncDef(ct *types.ClassType, m *parser.FuncDef) er
 
 	g.emitLine(fmt.Sprintf("define %s %s(%s) {", retLLVM, mangled, strings.Join(params, ", ")))
 	g.emitLine("entry:")
+	oldBody, oldAllocas := g.beginFunc()
 
 	// Save and restore state.
 	oldVars := g.vars
@@ -169,7 +170,7 @@ func (g *Generator) emitMethodFuncDef(ct *types.ClassType, m *parser.FuncDef) er
 
 	// Alloca for self and params.
 	selfAlloca := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca %s", selfAlloca, selfLLVM))
+	g.emitAlloca(selfAlloca, selfLLVM)
 	g.emitLine(fmt.Sprintf("  store %s %%self, %s* %s", selfLLVM, selfLLVM, selfAlloca))
 	g.vars["self"] = varInfo{llvmName: selfAlloca, typ: &types.InstanceType{Class: ct}}
 
@@ -178,13 +179,14 @@ func (g *Generator) emitMethodFuncDef(ct *types.ClassType, m *parser.FuncDef) er
 		pType := paramTypes[i]
 		llvmT := g.llvmType(pType)
 		allocaName := g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca %s", allocaName, llvmT))
+		g.emitAlloca(allocaName, llvmT)
 		g.emitLine(fmt.Sprintf("  store %s %%%s, %s* %s", llvmT, p.Name, llvmT, allocaName))
 		g.vars[p.Name] = varInfo{llvmName: allocaName, typ: pType}
 	}
 
 	for _, stmt := range m.Body {
 		if err := g.emitStmt(stmt); err != nil {
+			g.endFunc(oldBody, oldAllocas)
 			g.vars = oldVars
 			g.inFunction = oldInFunc
 			g.currentClass = oldClass
@@ -197,6 +199,7 @@ func (g *Generator) emitMethodFuncDef(ct *types.ClassType, m *parser.FuncDef) er
 	if _, isNone := retType.(*types.NoneType); isNone {
 		g.emitLine("  ret void")
 	}
+	g.endFunc(oldBody, oldAllocas)
 	g.emitLine("}")
 
 	g.vars = oldVars
@@ -253,6 +256,7 @@ func (g *Generator) emitSyntheticStr(ct *types.ClassType, name string) {
 
 	g.emitLine(fmt.Sprintf("define i8* %s(%s %%self) {", mangled, selfLLVM))
 	g.emitLine("entry:")
+	oldBody, oldAllocas := g.beginFunc()
 
 	// Register all the literal strings we'll need.
 	openTag := ct.Name + "("
@@ -294,6 +298,7 @@ func (g *Generator) emitSyntheticStr(ct *types.ClassType, name string) {
 	final := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_concat(i8* %s, i8* %s)", final, cur, closeTag))
 	g.emitLine(fmt.Sprintf("  ret i8* %s", final))
+	g.endFunc(oldBody, oldAllocas)
 	g.emitLine("}")
 }
 
@@ -523,10 +528,10 @@ func (g *Generator) emitIsInstanceRaw(rawObj string, targetClassID int) string {
 func (g *Generator) emitIsInstanceVtabWalk(startVtab string, targetClassID int) string {
 	// Alloca for current vtable pointer and result.
 	curAlloca := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca i8*", curAlloca))
+	g.emitAlloca(curAlloca, "i8*")
 	g.emitLine(fmt.Sprintf("  store i8* %s, i8** %s", startVtab, curAlloca))
 	resultAlloca := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca i1", resultAlloca))
+	g.emitAlloca(resultAlloca, "i1")
 	g.emitLine(fmt.Sprintf("  store i1 0, i1* %s", resultAlloca))
 
 	loopLabel := g.newLabel("isinstance.loop")
