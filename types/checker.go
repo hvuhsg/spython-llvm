@@ -1144,6 +1144,8 @@ func (c *Checker) checkForStmt(s *parser.ForStmt) error {
 		c.Env.Define(s.VarName, &IntType{})
 	case *ListType:
 		c.Env.Define(s.VarName, t.Elem)
+	case *SetType:
+		c.Env.Define(s.VarName, t.Elem)
 	case *StrType:
 		c.Env.Define(s.VarName, &StrType{})
 	case *IteratorType:
@@ -1308,6 +1310,8 @@ func (c *Checker) checkExpr(expr parser.Expr) (Type, error) {
 		t, err = c.checkAttrExpr(e)
 	case *parser.ListLit:
 		t, err = c.checkListLit(e)
+	case *parser.SetLit:
+		t, err = c.checkSetLit(e)
 	case *parser.MapLit:
 		t, err = c.checkMapLit(e)
 	case *parser.TupleLit:
@@ -1525,7 +1529,7 @@ func (c *Checker) checkCallExpr(e *parser.CallExpr) (Type, error) {
 				return nil, err
 			}
 			switch argType.(type) {
-			case *StrType, *BytesType, *BytearrayType, *ListType, *MapType:
+			case *StrType, *BytesType, *BytearrayType, *ListType, *MapType, *SetType:
 				return &IntType{}, nil
 			}
 			return nil, fmt.Errorf("%d:%d: len() not supported for %s", e.Pos.Line, e.Pos.Col, argType)
@@ -1924,6 +1928,13 @@ func (c *Checker) checkAttrExpr(e *parser.AttrExpr) (Type, error) {
 			// Returns a callable that takes one element and returns None
 			return &FuncType{Params: []Type{t.Elem}, Return: &NoneType{}}, nil
 		}
+	case *SetType:
+		switch e.Attr {
+		case "add", "discard":
+			return &FuncType{Params: []Type{t.Elem}, Return: &NoneType{}}, nil
+		case "contains":
+			return &FuncType{Params: []Type{t.Elem}, Return: &BoolType{}}, nil
+		}
 	case *BytearrayType:
 		_ = t
 		if e.Attr == "append" {
@@ -2014,6 +2025,36 @@ func mergeInstanceTypes(a, b Type) (Type, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (c *Checker) checkSetLit(e *parser.SetLit) (Type, error) {
+	if len(e.Elements) == 0 {
+		if st, ok := c.typeHint.(*SetType); ok {
+			return st, nil
+		}
+		return nil, fmt.Errorf("%d:%d: cannot infer type of empty set literal, use type annotation", e.Pos.Line, e.Pos.Col)
+	}
+
+	elemType, err := c.checkExpr(e.Elements[0])
+	if err != nil {
+		return nil, err
+	}
+
+	for i := 1; i < len(e.Elements); i++ {
+		et, err := c.checkExpr(e.Elements[i])
+		if err != nil {
+			return nil, err
+		}
+		if merged, ok := mergeInstanceTypes(elemType, et); ok {
+			elemType = merged
+			continue
+		}
+		if !elemType.Equals(et) {
+			return nil, fmt.Errorf("%d:%d: set elements must all be %s, got %s", e.Pos.Line, e.Pos.Col, elemType, et)
+		}
+	}
+
+	return &SetType{Elem: elemType}, nil
 }
 
 func (c *Checker) checkMapLit(e *parser.MapLit) (Type, error) {
@@ -2131,6 +2172,15 @@ func (c *Checker) resolveTypeAnnotation(ann *parser.TypeAnnotation) Type {
 			return nil
 		}
 		return &MapType{Key: key, Value: val}
+	case "set":
+		if len(ann.Params) != 1 {
+			return nil
+		}
+		elem := c.resolveTypeAnnotation(ann.Params[0])
+		if elem == nil {
+			return nil
+		}
+		return &SetType{Elem: elem}
 	case "Iterator":
 		if len(ann.Params) != 1 {
 			return nil

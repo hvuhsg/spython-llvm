@@ -677,31 +677,63 @@ func (p *Parser) parseListLit() (Expr, error) {
 
 func (p *Parser) parseMapLit() (Expr, error) {
 	tok := p.advance() // consume {
-	keys := []Expr{}
-	values := []Expr{}
-	if p.peek().Type != lexer.TOKEN_RBRACE {
-		for {
-			key, err := p.parseExpr(0)
-			if err != nil {
-				return nil, err
-			}
-			if err := p.expect(lexer.TOKEN_COLON); err != nil {
-				return nil, err
-			}
-			val, err := p.parseExpr(0)
-			if err != nil {
-				return nil, err
-			}
-			keys = append(keys, key)
-			values = append(values, val)
-			if p.peek().Type != lexer.TOKEN_COMMA {
-				break
-			}
+	// Empty {} is a map literal (consistent with Python; sets need set() or {x}).
+	if p.peek().Type == lexer.TOKEN_RBRACE {
+		p.advance()
+		return &MapLit{Pos: p.makePos(tok), Keys: nil, Values: nil}, nil
+	}
+
+	first, err := p.parseExpr(0)
+	if err != nil {
+		return nil, err
+	}
+
+	// `{x, ...}` or `{x}` is a set literal; `{x: y, ...}` is a map.
+	if p.peek().Type != lexer.TOKEN_COLON {
+		elements := []Expr{first}
+		for p.peek().Type == lexer.TOKEN_COMMA {
 			p.advance()
 			if p.peek().Type == lexer.TOKEN_RBRACE {
 				break // trailing comma
 			}
+			el, err := p.parseExpr(0)
+			if err != nil {
+				return nil, err
+			}
+			elements = append(elements, el)
 		}
+		if err := p.expect(lexer.TOKEN_RBRACE); err != nil {
+			return nil, err
+		}
+		return &SetLit{Pos: p.makePos(tok), Elements: elements}, nil
+	}
+
+	// Map literal: first key, then `: val, ...`
+	p.advance() // consume :
+	firstVal, err := p.parseExpr(0)
+	if err != nil {
+		return nil, err
+	}
+	keys := []Expr{first}
+	values := []Expr{firstVal}
+	for p.peek().Type == lexer.TOKEN_COMMA {
+		p.advance()
+		if p.peek().Type == lexer.TOKEN_RBRACE {
+			break // trailing comma
+		}
+		k, err := p.parseExpr(0)
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expect(lexer.TOKEN_COLON); err != nil {
+			return nil, err
+		}
+		v, err := p.parseExpr(0)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+		values = append(values, v)
 	}
 	if err := p.expect(lexer.TOKEN_RBRACE); err != nil {
 		return nil, err

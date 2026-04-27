@@ -453,6 +453,152 @@ static void map_resize(SpyMap *map) {
     }
 }
 
+// ==================== Sets ====================
+// Open-addressing hash set; mirrors SpyMap with keys only.
+
+typedef struct {
+    char *key;
+    int occupied;
+} SetEntry;
+
+typedef struct {
+    int64_t key_size;
+    int64_t hash_type; // 0=int, 1=str
+    int64_t len;
+    int64_t cap;
+    SetEntry *entries;
+} SpySet;
+
+static void set_resize(SpySet *set);
+
+static uint64_t set_hash(SpySet *set, const char *key) {
+    if (set->hash_type == 1) {
+        return hash_str(key, set->key_size);
+    }
+    return hash_int(key, set->key_size);
+}
+
+static int set_key_eq(SpySet *set, const char *a, const char *b) {
+    if (set->hash_type == 1) {
+        return key_eq_str(a, b, set->key_size);
+    }
+    return key_eq_int(a, b, set->key_size);
+}
+
+char* spy_set_new(int64_t key_size, int64_t hash_type) {
+    SpySet *set = GC_MALLOC(sizeof(SpySet));
+    set->key_size = key_size;
+    set->hash_type = hash_type;
+    set->len = 0;
+    set->cap = MAP_INIT_CAP;
+    set->entries = GC_MALLOC(MAP_INIT_CAP * sizeof(SetEntry));
+    return (char*)set;
+}
+
+void spy_set_add(char *set_ptr, const char *key) {
+    SpySet *set = (SpySet*)set_ptr;
+
+    if ((double)(set->len + 1) / (double)set->cap > MAP_LOAD_FACTOR) {
+        set_resize(set);
+    }
+
+    uint64_t h = set_hash(set, key) % set->cap;
+    for (int64_t i = 0; i < set->cap; i++) {
+        int64_t idx = (h + i) % set->cap;
+        SetEntry *entry = &set->entries[idx];
+        if (!entry->occupied) {
+            entry->key = GC_MALLOC(set->key_size);
+            memcpy(entry->key, key, set->key_size);
+            entry->occupied = 1;
+            set->len++;
+            return;
+        }
+        if (set_key_eq(set, entry->key, key)) {
+            return; // already present
+        }
+    }
+}
+
+int spy_set_contains(const char *set_ptr, const char *key) {
+    SpySet *set = (SpySet*)set_ptr;
+    uint64_t h = set_hash(set, key) % set->cap;
+    for (int64_t i = 0; i < set->cap; i++) {
+        int64_t idx = (h + i) % set->cap;
+        SetEntry *entry = &set->entries[idx];
+        if (!entry->occupied) return 0;
+        if (set_key_eq(set, entry->key, key)) return 1;
+    }
+    return 0;
+}
+
+// Mark a slot empty by walking probe chain. Subsequent collisions for keys
+// that hashed past this slot continue to find their entries because we do
+// not move them — discard is a tombstone-free remove that works for our
+// load-factor-bounded table.
+void spy_set_discard(char *set_ptr, const char *key) {
+    SpySet *set = (SpySet*)set_ptr;
+    uint64_t h = set_hash(set, key) % set->cap;
+    for (int64_t i = 0; i < set->cap; i++) {
+        int64_t idx = (h + i) % set->cap;
+        SetEntry *entry = &set->entries[idx];
+        if (!entry->occupied) return;
+        if (set_key_eq(set, entry->key, key)) {
+            // Re-insert subsequent occupied entries in the probe chain so
+            // future lookups still find them.
+            entry->occupied = 0;
+            entry->key = NULL;
+            set->len--;
+            for (int64_t j = i + 1; j < set->cap; j++) {
+                int64_t jidx = (h + j) % set->cap;
+                SetEntry *next = &set->entries[jidx];
+                if (!next->occupied) return;
+                char *rk = next->key;
+                next->occupied = 0;
+                next->key = NULL;
+                set->len--;
+                spy_set_add(set_ptr, rk);
+            }
+            return;
+        }
+    }
+}
+
+int64_t spy_set_len(const char *set_ptr) {
+    SpySet *set = (SpySet*)set_ptr;
+    return set->len;
+}
+
+// Iteration: return the bucket index of the next occupied slot at or after
+// `start`, or -1 when none. The compiler emits `for x in s` as a loop that
+// calls spy_set_next() and reads the key via spy_set_key().
+int64_t spy_set_next(const char *set_ptr, int64_t start) {
+    SpySet *set = (SpySet*)set_ptr;
+    for (int64_t i = start; i < set->cap; i++) {
+        if (set->entries[i].occupied) return i;
+    }
+    return -1;
+}
+
+char* spy_set_key(const char *set_ptr, int64_t idx) {
+    SpySet *set = (SpySet*)set_ptr;
+    return set->entries[idx].key;
+}
+
+static void set_resize(SpySet *set) {
+    int64_t old_cap = set->cap;
+    SetEntry *old_entries = set->entries;
+
+    set->cap *= 2;
+    set->entries = GC_MALLOC(set->cap * sizeof(SetEntry));
+    set->len = 0;
+
+    for (int64_t i = 0; i < old_cap; i++) {
+        if (old_entries[i].occupied) {
+            spy_set_add((char*)set, old_entries[i].key);
+        }
+    }
+}
+
 // ==================== Conversions ====================
 
 char* spy_int_to_str(int64_t x) {

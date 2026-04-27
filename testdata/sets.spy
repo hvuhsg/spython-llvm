@@ -1,0 +1,25 @@
+nums: set[int] = {1, 2, 3, 2, 1}
+print(len(nums))
+print(nums.contains(2))
+print(nums.contains(99))
+
+nums.add(4)
+nums.add(2)  # duplicate
+print(len(nums))
+print(nums.contains(4))
+
+nums.discard(2)
+print(len(nums))
+print(nums.contains(2))
+
+# Iterate. Order isn't guaranteed, so sum the values.
+total: int = 0
+for x in nums:
+    total = total + x
+print(total)
+
+# String set + empty literal via annotation.
+words: set[str] = {"hello", "world", "hello"}
+print(len(words))
+print(words.contains("world"))
+print(words.contains("nope"))

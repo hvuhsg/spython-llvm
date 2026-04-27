@@ -406,7 +406,7 @@ func (g *Generator) zeroValue(t types.Type) string {
 		return "0.0"
 	case *types.BoolType:
 		return "0"
-	case *types.StrType, *types.ListType, *types.MapType, *types.IteratorType:
+	case *types.StrType, *types.ListType, *types.MapType, *types.SetType, *types.IteratorType:
 		return "null"
 	case *types.NoneType:
 		return "zeroinitializer"
@@ -495,6 +495,13 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare i1 @spy_map_contains(i8*, i8*)")
 	g.emitLine("declare i64 @spy_map_len(i8*)")
 	g.emitLine("declare void @spy_map_extend(i8*, i8*)")
+	g.emitLine("declare i8* @spy_set_new(i64, i64)")
+	g.emitLine("declare void @spy_set_add(i8*, i8*)")
+	g.emitLine("declare i1 @spy_set_contains(i8*, i8*)")
+	g.emitLine("declare void @spy_set_discard(i8*, i8*)")
+	g.emitLine("declare i64 @spy_set_len(i8*)")
+	g.emitLine("declare i64 @spy_set_next(i8*, i64)")
+	g.emitLine("declare i8* @spy_set_key(i8*, i64)")
 	g.emitLine("declare i8* @spy_int_to_str(i64)")
 	g.emitLine("declare i8* @spy_float_to_str(double)")
 	g.emitLine("declare i8* @spy_bool_to_str(i1)")
@@ -645,6 +652,10 @@ func (g *Generator) resolveTypeAnnotation(ann *parser.TypeAnnotation) types.Type
 	case "map":
 		if len(ann.Params) == 2 {
 			return &types.MapType{Key: g.resolveTypeAnnotation(ann.Params[0]), Value: g.resolveTypeAnnotation(ann.Params[1])}
+		}
+	case "set":
+		if len(ann.Params) == 1 {
+			return &types.SetType{Elem: g.resolveTypeAnnotation(ann.Params[0])}
 		}
 	case "tuple":
 		elems := make([]types.Type, len(ann.Params))
@@ -815,7 +826,58 @@ func (g *Generator) emitMethodCall(attr *parser.AttrExpr, args []parser.Expr) er
 		return nil
 	}
 
+	if st, ok := objType.(*types.SetType); ok && (attr.Attr == "add" || attr.Attr == "discard") {
+		if len(args) != 1 {
+			return fmt.Errorf("%s takes 1 argument", attr.Attr)
+		}
+		argVal, err := g.emitExpr(args[0])
+		if err != nil {
+			return err
+		}
+		if at, ok := args[0].GetResolvedType().(types.Type); ok {
+			argVal = g.castToType(argVal, at, st.Elem)
+		}
+		elemLLVM := g.llvmType(st.Elem)
+		tmpAlloca := g.newTmp()
+		g.emitAlloca(tmpAlloca, elemLLVM)
+		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, argVal, elemLLVM, tmpAlloca))
+		tmpCast := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", tmpCast, elemLLVM, tmpAlloca))
+		fn := "spy_set_add"
+		if attr.Attr == "discard" {
+			fn = "spy_set_discard"
+		}
+		g.emitLine(fmt.Sprintf("  call void @%s(i8* %s, i8* %s)", fn, objVal, tmpCast))
+		return nil
+	}
+
 	return fmt.Errorf("unknown method: %s.%s", objType, attr.Attr)
+}
+
+func (g *Generator) emitSetContains(attr *parser.AttrExpr, st *types.SetType, args []parser.Expr) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("contains takes 1 argument")
+	}
+	objVal, err := g.emitExpr(attr.Object)
+	if err != nil {
+		return "", err
+	}
+	argVal, err := g.emitExpr(args[0])
+	if err != nil {
+		return "", err
+	}
+	if at, ok := args[0].GetResolvedType().(types.Type); ok {
+		argVal = g.castToType(argVal, at, st.Elem)
+	}
+	elemLLVM := g.llvmType(st.Elem)
+	tmpAlloca := g.newTmp()
+	g.emitAlloca(tmpAlloca, elemLLVM)
+	g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, argVal, elemLLVM, tmpAlloca))
+	tmpCast := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", tmpCast, elemLLVM, tmpAlloca))
+	result := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i1 @spy_set_contains(i8* %s, i8* %s)", result, objVal, tmpCast))
+	return result, nil
 }
 
 func (g *Generator) emitAssignStmt(s *parser.AssignStmt) error {
@@ -1300,6 +1362,8 @@ func (g *Generator) emitForCollection(s *parser.ForStmt) error {
 	switch t := iterType.(type) {
 	case *types.ListType:
 		return g.emitForList(s, collVal, t)
+	case *types.SetType:
+		return g.emitForSet(s, collVal, t)
 	case *types.StrType:
 		return g.emitForStr(s, collVal)
 	case *types.IteratorType:
@@ -1307,6 +1371,64 @@ func (g *Generator) emitForCollection(s *parser.ForStmt) error {
 	}
 
 	return fmt.Errorf("cannot iterate over %s", iterType)
+}
+
+func (g *Generator) emitForSet(s *parser.ForStmt, setVal string, st *types.SetType) error {
+	idxVar := g.newTmp()
+	g.emitAlloca(idxVar, "i64")
+	g.emitLine(fmt.Sprintf("  store i64 0, i64* %s", idxVar))
+
+	elemLLVM := g.llvmType(st.Elem)
+	loopVar := g.newTmp()
+	g.emitAlloca(loopVar, elemLLVM)
+	g.vars[s.VarName] = varInfo{llvmName: loopVar, typ: st.Elem}
+
+	condLabel := g.newLabel("forset.cond")
+	bodyLabel := g.newLabel("forset.body")
+	incLabel := g.newLabel("forset.inc")
+	endLabel := g.newLabel("forset.end")
+
+	g.breakLabels = append(g.breakLabels, endLabel)
+	g.continueLabels = append(g.continueLabels, incLabel)
+
+	g.emitLine(fmt.Sprintf("  br label %%%s", condLabel))
+	g.emitLine(fmt.Sprintf("%s:", condLabel))
+
+	curIdx := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i64, i64* %s", curIdx, idxVar))
+	nextIdx := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i64 @spy_set_next(i8* %s, i64 %s)", nextIdx, setVal, curIdx))
+	cmp := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = icmp sge i64 %s, 0", cmp, nextIdx))
+	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", cmp, bodyLabel, endLabel))
+
+	g.emitLine(fmt.Sprintf("%s:", bodyLabel))
+	keyPtr := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_set_key(i8* %s, i64 %s)", keyPtr, setVal, nextIdx))
+	keyCast := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", keyCast, keyPtr, elemLLVM))
+	keyVal := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", keyVal, elemLLVM, elemLLVM, keyCast))
+	g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, keyVal, elemLLVM, loopVar))
+
+	for _, stmt := range s.Body {
+		if err := g.emitStmt(stmt); err != nil {
+			return err
+		}
+	}
+	g.emitLine(fmt.Sprintf("  br label %%%s", incLabel))
+
+	g.emitLine(fmt.Sprintf("%s:", incLabel))
+	advance := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = add i64 %s, 1", advance, nextIdx))
+	g.emitLine(fmt.Sprintf("  store i64 %s, i64* %s", advance, idxVar))
+	g.emitLine(fmt.Sprintf("  br label %%%s", condLabel))
+
+	g.emitLine(fmt.Sprintf("%s:", endLabel))
+
+	g.breakLabels = g.breakLabels[:len(g.breakLabels)-1]
+	g.continueLabels = g.continueLabels[:len(g.continueLabels)-1]
+	return nil
 }
 
 func (g *Generator) emitForList(s *parser.ForStmt, listVal string, lt *types.ListType) error {
@@ -1579,6 +1701,9 @@ func (g *Generator) emitExpr(expr parser.Expr) (string, error) {
 
 	case *parser.MapLit:
 		return g.emitMapLit(e)
+
+	case *parser.SetLit:
+		return g.emitSetLit(e)
 
 	case *parser.TupleLit:
 		return g.emitTupleLit(e)
@@ -1901,6 +2026,11 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 				return g.emitUserCall(ft.ExternSymbol, e)
 			}
 			return g.emitUserCall(fmt.Sprintf("spy_%s_%s", modT.ID, attr.Attr), e)
+		}
+		// Set.contains returns a bool; route it before the generic method
+		// path which is void-returning.
+		if st, isSet := attr.Object.GetResolvedType().(*types.SetType); isSet && attr.Attr == "contains" {
+			return g.emitSetContains(attr, st, e.Args)
 		}
 		// Otherwise it's a method (existing behavior: list.append, etc.)
 		if err := g.emitMethodCall(attr, e.Args); err != nil {
@@ -2263,6 +2393,8 @@ func (g *Generator) emitLenCall(e *parser.CallExpr) (string, error) {
 		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_list_len(i8* %s)", result, argVal))
 	case *types.MapType:
 		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_map_len(i8* %s)", result, argVal))
+	case *types.SetType:
+		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_set_len(i8* %s)", result, argVal))
 	}
 
 	return result, nil
@@ -2531,6 +2663,38 @@ func (g *Generator) emitMapLit(e *parser.MapLit) (string, error) {
 	return mapVal, nil
 }
 
+func (g *Generator) emitSetLit(e *parser.SetLit) (string, error) {
+	setType := e.GetResolvedType().(*types.SetType)
+	keySize := g.typeSize(setType.Elem)
+
+	hashType := 0
+	if _, ok := setType.Elem.(*types.StrType); ok {
+		hashType = 1
+	}
+
+	setVal := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_set_new(i64 %d, i64 %d)", setVal, keySize, hashType))
+
+	elemLLVM := g.llvmType(setType.Elem)
+	for _, el := range e.Elements {
+		val, err := g.emitExpr(el)
+		if err != nil {
+			return "", err
+		}
+		if et, ok := el.GetResolvedType().(types.Type); ok {
+			val = g.castToType(val, et, setType.Elem)
+		}
+		tmpAlloca := g.newTmp()
+		g.emitAlloca(tmpAlloca, elemLLVM)
+		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, val, elemLLVM, tmpAlloca))
+		tmpCast := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", tmpCast, elemLLVM, tmpAlloca))
+		g.emitLine(fmt.Sprintf("  call void @spy_set_add(i8* %s, i8* %s)", setVal, tmpCast))
+	}
+
+	return setVal, nil
+}
+
 // emitTupleLit allocates a GC-managed struct, stores each element, and
 // returns the pointer.
 func (g *Generator) emitTupleLit(e *parser.TupleLit) (string, error) {
@@ -2592,6 +2756,8 @@ func (g *Generator) llvmType(t types.Type) string {
 		return "i8*"
 	case *types.MapType:
 		return "i8*"
+	case *types.SetType:
+		return "i8*"
 	case *types.InstanceType:
 		return fmt.Sprintf("%%Class.%s*", v.Class.Name)
 	case *types.IteratorType:
@@ -2629,6 +2795,8 @@ func (g *Generator) typeSize(t types.Type) int {
 	case *types.ListType:
 		return 8
 	case *types.MapType:
+		return 8
+	case *types.SetType:
 		return 8
 	case *types.InstanceType:
 		return 8 // pointer size
@@ -2849,6 +3017,10 @@ func (g *Generator) collectStringsInExpr(expr parser.Expr) {
 		}
 		for _, v := range e.Values {
 			g.collectStringsInExpr(v)
+		}
+	case *parser.SetLit:
+		for _, el := range e.Elements {
+			g.collectStringsInExpr(el)
 		}
 	case *parser.TupleLit:
 		for _, el := range e.Elements {

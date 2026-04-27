@@ -494,6 +494,15 @@ type MapLit struct {
 func (e *MapLit) GetPos() Pos { return e.Pos }
 func (e *MapLit) exprNode()   {}
 
+type SetLit struct {
+	baseExpr
+	Pos      Pos
+	Elements []Expr
+}
+
+func (e *SetLit) GetPos() Pos { return e.Pos }
+func (e *SetLit) exprNode()   {}
+
 // TupleLit is a parenthesized tuple literal: (x, y) or (x,) or () .
 // A parenthesized single expression without a trailing comma is NOT a tuple
 // — it's just grouping, and the parser returns the inner expression directly.
