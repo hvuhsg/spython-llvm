@@ -1,0 +1,23 @@
+import errno
+
+# Spot-check stable POSIX values.
+print(errno.EPERM)
+print(errno.ENOENT)
+print(errno.EBADF)
+print(errno.EACCES)
+print(errno.EEXIST)
+print(errno.EINVAL)
+print(errno.EPIPE)
+
+# EAGAIN and EWOULDBLOCK are aliases on Darwin/BSD.
+print(errno.EAGAIN)
+print(errno.EWOULDBLOCK)
+print(errno.EAGAIN == errno.EWOULDBLOCK)
+
+# errorcode reverse-lookup.
+print(errno.errorcode[1])
+print(errno.errorcode[errno.ENOENT])
+print(errno.errorcode[errno.ECONNREFUSED])
+
+# Total number of mapped errnos.
+print(len(errno.errorcode))

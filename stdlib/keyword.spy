@@ -1,0 +1,17 @@
+# stdlib/keyword.spy — Python keyword list, 1:1 with CPython's keyword module.
+#
+# Mirrors CPython 3.13: kwlist (hard reserved words), softkwlist (soft
+# keywords like 'match' / 'case'), and iskeyword (membership test).
+
+kwlist: list[str] = ["False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while", "with", "yield"]
+
+softkwlist: list[str] = ["_", "case", "match", "type"]
+
+# CPython implements this as `frozenset(kwlist).__contains__`; spython has no
+# `in` operator over runtime lists yet, so we walk linearly. Same semantics,
+# different implementation.
+def iskeyword(s: str) -> bool:
+    for kw in kwlist:
+        if kw == s:
+            return True
+    return False

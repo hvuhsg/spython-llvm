@@ -1,0 +1,174 @@
+# stdlib/stat.spy — bit constants and helpers for st_mode values returned by
+# os.stat(). 1:1 with CPython's stat module: every public name and every
+# helper has the same signature (single int in, bool/int/str out).
+#
+# Octal literals in CPython source are written here as their decimal values
+# because spython has no octal-literal syntax. The hex/octal forms are noted
+# in the trailing comment for cross-reference.
+
+# Indices for stat struct members in the tuple returned by os.stat()
+ST_MODE: int = 0
+ST_INO: int = 1
+ST_DEV: int = 2
+ST_NLINK: int = 3
+ST_UID: int = 4
+ST_GID: int = 5
+ST_SIZE: int = 6
+ST_ATIME: int = 7
+ST_MTIME: int = 8
+ST_CTIME: int = 9
+
+# File-type bits (high nibble of st_mode).
+S_IFMT_MASK: int = 61440  # 0o170000 — mask for file-type bits
+
+S_IFDIR: int = 16384   # 0o040000  directory
+S_IFCHR: int = 8192    # 0o020000  character device
+S_IFBLK: int = 24576   # 0o060000  block device
+S_IFREG: int = 32768   # 0o100000  regular file
+S_IFIFO: int = 4096    # 0o010000  fifo (named pipe)
+S_IFLNK: int = 40960   # 0o120000  symbolic link
+S_IFSOCK: int = 49152  # 0o140000  socket
+# Fallbacks for uncommon platform-specific types — CPython sets these to 0.
+S_IFDOOR: int = 0
+S_IFPORT: int = 0
+S_IFWHT: int = 0
+
+# Permission bits.
+S_ISUID: int = 2048  # 0o4000  set-user-ID
+S_ISGID: int = 1024  # 0o2000  set-group-ID
+S_ENFMT: int = 1024  # alias of S_ISGID
+S_ISVTX: int = 512   # 0o1000  sticky bit
+
+S_IREAD: int = 256   # 0o0400  legacy alias for S_IRUSR
+S_IWRITE: int = 128  # 0o0200  legacy alias for S_IWUSR
+S_IEXEC: int = 64    # 0o0100  legacy alias for S_IXUSR
+
+S_IRWXU: int = 448   # 0o0700
+S_IRUSR: int = 256   # 0o0400
+S_IWUSR: int = 128   # 0o0200
+S_IXUSR: int = 64    # 0o0100
+
+S_IRWXG: int = 56    # 0o0070
+S_IRGRP: int = 32    # 0o0040
+S_IWGRP: int = 16    # 0o0020
+S_IXGRP: int = 8     # 0o0010
+
+S_IRWXO: int = 7     # 0o0007
+S_IROTH: int = 4     # 0o0004
+S_IWOTH: int = 2     # 0o0002
+S_IXOTH: int = 1     # 0o0001
+
+# Bit-extraction helpers. CPython names S_IFMT as a function — we expose it
+# as both: the constant mask is S_IFMT_MASK (above), the function is below.
+
+def S_IMODE(mode: int) -> int:
+    return mode & 4095  # 0o7777 — permission bits + setuid/gid/sticky
+
+def S_IFMT(mode: int) -> int:
+    return mode & 61440  # 0o170000
+
+# File-type predicates.
+
+def S_ISDIR(mode: int) -> bool:
+    return (mode & 61440) == S_IFDIR
+
+def S_ISCHR(mode: int) -> bool:
+    return (mode & 61440) == S_IFCHR
+
+def S_ISBLK(mode: int) -> bool:
+    return (mode & 61440) == S_IFBLK
+
+def S_ISREG(mode: int) -> bool:
+    return (mode & 61440) == S_IFREG
+
+def S_ISFIFO(mode: int) -> bool:
+    return (mode & 61440) == S_IFIFO
+
+def S_ISLNK(mode: int) -> bool:
+    return (mode & 61440) == S_IFLNK
+
+def S_ISSOCK(mode: int) -> bool:
+    return (mode & 61440) == S_IFSOCK
+
+def S_ISDOOR(mode: int) -> bool:
+    return False
+
+def S_ISPORT(mode: int) -> bool:
+    return False
+
+def S_ISWHT(mode: int) -> bool:
+    return False
+
+# filemode(mode) -> "drwxr-xr-x"-style string. CPython's reference output is
+# 10 chars: 1 type + 9 permissions, with set-uid/set-gid/sticky encoded as
+# s/S/t/T overlays. The order of the type checks below matches CPython's
+# _filemode_table (link first so that l beats - on st_mode that has both).
+
+def _type_char(mode: int) -> str:
+    t: int = mode & 61440
+    if t == S_IFLNK:
+        return "l"
+    if t == S_IFSOCK:
+        return "s"
+    if t == S_IFREG:
+        return "-"
+    if t == S_IFBLK:
+        return "b"
+    if t == S_IFDIR:
+        return "d"
+    if t == S_IFCHR:
+        return "c"
+    if t == S_IFIFO:
+        return "p"
+    return "?"
+
+def _exec_user(mode: int) -> str:
+    has_x: bool = (mode & S_IXUSR) != 0
+    has_s: bool = (mode & S_ISUID) != 0
+    if has_x and has_s:
+        return "s"
+    if has_s:
+        return "S"
+    if has_x:
+        return "x"
+    return "-"
+
+def _exec_group(mode: int) -> str:
+    has_x: bool = (mode & S_IXGRP) != 0
+    has_s: bool = (mode & S_ISGID) != 0
+    if has_x and has_s:
+        return "s"
+    if has_s:
+        return "S"
+    if has_x:
+        return "x"
+    return "-"
+
+def _exec_other(mode: int) -> str:
+    has_x: bool = (mode & S_IXOTH) != 0
+    has_t: bool = (mode & S_ISVTX) != 0
+    if has_x and has_t:
+        return "t"
+    if has_t:
+        return "T"
+    if has_x:
+        return "x"
+    return "-"
+
+def _bit_char(mode: int, bit: int, ch: str) -> str:
+    if (mode & bit) != 0:
+        return ch
+    return "-"
+
+def filemode(mode: int) -> str:
+    out: str = _type_char(mode)
+    out = out + _bit_char(mode, S_IRUSR, "r")
+    out = out + _bit_char(mode, S_IWUSR, "w")
+    out = out + _exec_user(mode)
+    out = out + _bit_char(mode, S_IRGRP, "r")
+    out = out + _bit_char(mode, S_IWGRP, "w")
+    out = out + _exec_group(mode)
+    out = out + _bit_char(mode, S_IROTH, "r")
+    out = out + _bit_char(mode, S_IWOTH, "w")
+    out = out + _exec_other(mode)
+    return out
