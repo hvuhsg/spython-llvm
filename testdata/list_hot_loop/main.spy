@@ -1,0 +1,27 @@
+# Regression test for the alloca-in-loop stack overflow that broke
+# fannkuch(n>=9): a long-running loop that does list-element assignment
+# and a typed local declaration on every iteration.
+#
+# Pre-fix this segfaulted around 100k iterations because each
+# `c[i] = ...` and `tmp: int = ...` emitted a fresh alloca inside the
+# loop body. With allocas hoisted to the entry block, the loop runs in
+# constant stack regardless of iteration count.
+
+def f(n: int, iters: int) -> int:
+    c: list[int] = []
+    i: int = 0
+    while i < n:
+        c.append(0)
+        i = i + 1
+    iter_count: int = 0
+    while iter_count < iters:
+        i = 0
+        while i < n:
+            tmp: int = c[i] + 1
+            c[i] = tmp
+            i = i + 1
+        iter_count = iter_count + 1
+    return c[0]
+
+
+print(f(9, 500000))

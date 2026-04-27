@@ -206,7 +206,7 @@ func (g *Generator) emitTryStmt(s *parser.TryStmt) error {
 	// platform's jmp_buf plus the linked-list `prev` pointer. The runtime
 	// static-asserts sizeof(SpyExcFrame) <= 256.
 	bufArr := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = alloca [256 x i8]", bufArr))
+	g.emitAlloca(bufArr, "[256 x i8]")
 	bufI8 := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = bitcast [256 x i8]* %s to i8*", bufI8, bufArr))
 
@@ -224,13 +224,13 @@ func (g *Generator) emitTryStmt(s *parser.TryStmt) error {
 
 		// Allocate pending slot and (if needed) ret slot.
 		frame.pendingSlot = g.newTmp()
-		g.emitLine(fmt.Sprintf("  %s = alloca i32", frame.pendingSlot))
+		g.emitAlloca(frame.pendingSlot, "i32")
 		g.emitLine(fmt.Sprintf("  store i32 %d, i32* %s", pendingFallthrough, frame.pendingSlot))
 
 		if g.currentReturnLLVMType != "" && g.currentReturnLLVMType != "void" {
 			frame.retLLVMType = g.currentReturnLLVMType
 			frame.retSlot = g.newTmp()
-			g.emitLine(fmt.Sprintf("  %s = alloca %s", frame.retSlot, frame.retLLVMType))
+			g.emitAlloca(frame.retSlot, frame.retLLVMType)
 		}
 
 		// Snapshots + break/continue targets used by the finally switch.
@@ -320,7 +320,7 @@ func (g *Generator) emitTryStmt(s *parser.TryStmt) error {
 			g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %%Class.%s*", castedPtr, excRaw, className))
 			// Alloca a slot for the variable so subsequent loads/stores work.
 			alloca := g.newTmp()
-			g.emitLine(fmt.Sprintf("  %s = alloca %%Class.%s*", alloca, className))
+			g.emitAlloca(alloca, fmt.Sprintf("%%Class.%s*", className))
 			g.emitLine(fmt.Sprintf("  store %%Class.%s* %s, %%Class.%s** %s",
 				className, castedPtr, className, alloca))
 			if existing, ok := g.vars[ec.VarName]; ok {
