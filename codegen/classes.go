@@ -44,6 +44,12 @@ func (g *Generator) emitClassTypes() {
 // methods defined on this class are appended at the end. Overriding a base
 // method reuses the base's slot but changes the slot owner.
 func (g *Generator) computeSlots(ct *types.ClassType) {
+	if g.genClassSet[ct] {
+		// Generator classes have their slots set up manually by
+		// registerGenerator (always [__iter__, __next__]) — do not
+		// overwrite that with the regular method-walking logic.
+		return
+	}
 	var baseOrder []string
 	var baseOwners []*types.ClassType
 	if ct.Base != nil {
@@ -103,6 +109,12 @@ func (g *Generator) methodMangled(ct *types.ClassType, methodName string) string
 // emitClassMethods emits LLVM function definitions for all user-defined
 // methods on a class plus auto-synthesized __str__/__repr__ as needed.
 func (g *Generator) emitClassMethods(ct *types.ClassType) error {
+	if g.genClassSet[ct] {
+		// Generator classes get __iter__ and __next__ from
+		// emitGeneratorMethods; no synthetic __str__/__repr__ either,
+		// since the user can't take str(iterator) meaningfully.
+		return nil
+	}
 	cd := g.classDef[ct]
 	definedMethods := map[string]bool{}
 	if cd != nil {
@@ -147,7 +159,7 @@ func (g *Generator) emitMethodFuncDef(ct *types.ClassType, m *parser.FuncDef) er
 
 	for i := 1; i < len(m.Params); i++ {
 		p := m.Params[i]
-		pType := g.resolveTypeAnnotation(p.TypeAnn)
+		pType := g.paramRuntimeType(p)
 		params = append(params, fmt.Sprintf("%s %%%s", g.llvmType(pType), p.Name))
 		paramTypes = append(paramTypes, pType)
 	}
@@ -341,7 +353,7 @@ func (g *Generator) spyValueToStr(t types.Type, val string) string {
 // call. `args`/`argTypes` are the remaining (non-self) arguments. `retType` is
 // the method's return type. Returns the SSA name of the result (or "void" for
 // void returns).
-func (g *Generator) emitVirtualCall(selfVal string, staticClass *types.ClassType, methodName string, args []string, argTypes []types.Type, retType types.Type) string {
+func (g *Generator) emitVirtualCall(selfVal string, staticClass *types.ClassType, methodName string, parts []string, argLLVMTypes []string, retType types.Type) string {
 	slot, ok := g.methodSlots[staticClass][methodName]
 	if !ok {
 		// Method doesn't exist on this class — should have been caught by the checker.
@@ -352,9 +364,7 @@ func (g *Generator) emitVirtualCall(selfVal string, staticClass *types.ClassType
 	// Build the LLVM function-pointer type.
 	fnTypePrefix := retLLVMOrVoid(g, retType)
 	typeParams := []string{fmt.Sprintf("%%Class.%s*", staticClass.Name)}
-	for _, at := range argTypes {
-		typeParams = append(typeParams, g.llvmType(at))
-	}
+	typeParams = append(typeParams, argLLVMTypes...)
 	fnTypeStr := fmt.Sprintf("%s (%s)", fnTypePrefix, strings.Join(typeParams, ", "))
 
 	// Load vtable pointer (offset 0) from instance.
@@ -379,9 +389,7 @@ func (g *Generator) emitVirtualCall(selfVal string, staticClass *types.ClassType
 
 	// Build arg list.
 	allArgs := []string{fmt.Sprintf("%s %s", selfLLVM, selfVal)}
-	for i, a := range args {
-		allArgs = append(allArgs, fmt.Sprintf("%s %s", g.llvmType(argTypes[i]), a))
-	}
+	allArgs = append(allArgs, parts...)
 
 	if _, isNone := retType.(*types.NoneType); isNone {
 		g.emitLine(fmt.Sprintf("  call void %s(%s)", fnTyped, strings.Join(allArgs, ", ")))
@@ -394,8 +402,9 @@ func (g *Generator) emitVirtualCall(selfVal string, staticClass *types.ClassType
 
 // emitStaticCall emits a direct (non-virtual) call to a method — used for
 // super().method(...). selfVal is the instance pointer; ownerClass is the
-// defining class; args/argTypes are the non-self arguments.
-func (g *Generator) emitStaticCall(selfVal string, selfClass *types.ClassType, ownerClass *types.ClassType, methodName string, args []string, argTypes []types.Type, retType types.Type) string {
+// defining class; parts are the already-formatted ("type val") non-self
+// arguments (which may include trailing varargs/kwargs handles).
+func (g *Generator) emitStaticCall(selfVal string, selfClass *types.ClassType, ownerClass *types.ClassType, methodName string, parts []string, retType types.Type) string {
 	// If self's static class differs from ownerClass, we may need to bitcast.
 	ownerLLVM := fmt.Sprintf("%%Class.%s*", ownerClass.Name)
 	castedSelf := selfVal
@@ -406,9 +415,7 @@ func (g *Generator) emitStaticCall(selfVal string, selfClass *types.ClassType, o
 
 	mangled := g.methodMangled(ownerClass, methodName)
 	allArgs := []string{fmt.Sprintf("%s %s", ownerLLVM, castedSelf)}
-	for i, a := range args {
-		allArgs = append(allArgs, fmt.Sprintf("%s %s", g.llvmType(argTypes[i]), a))
-	}
+	allArgs = append(allArgs, parts...)
 	if _, isNone := retType.(*types.NoneType); isNone {
 		g.emitLine(fmt.Sprintf("  call void %s(%s)", mangled, strings.Join(allArgs, ", ")))
 		return "void"
@@ -420,7 +427,7 @@ func (g *Generator) emitStaticCall(selfVal string, selfClass *types.ClassType, o
 
 // emitConstructorCall emits IR for `ClassName(args)`: allocates an instance,
 // stores the vtable pointer, invokes __init__, and returns the instance pointer.
-func (g *Generator) emitConstructorCall(ct *types.ClassType, args []parser.Expr) (string, error) {
+func (g *Generator) emitConstructorCall(ct *types.ClassType, e *parser.CallExpr) (string, error) {
 	// Compute struct size: 8 bytes vtable ptr + sum of field sizes (rounded to 8).
 	size := int64(8)
 	for _, f := range ct.Fields {
@@ -447,17 +454,15 @@ func (g *Generator) emitConstructorCall(ct *types.ClassType, args []parser.Expr)
 		if owner == nil {
 			owner = ct
 		}
-		argVals := []string{}
-		argTypes := []types.Type{}
-		for _, arg := range args {
-			val, err := g.emitExpr(arg)
-			if err != nil {
-				return "", err
-			}
-			argVals = append(argVals, val)
-			argTypes = append(argTypes, arg.GetResolvedType().(types.Type))
+		var initSig *types.FuncType
+		if sig, ok := owner.Methods["__init__"]; ok {
+			initSig = sig
 		}
-		g.emitStaticCall(instPtr, ct, owner, "__init__", argVals, argTypes, &types.NoneType{})
+		parts, _, err := g.prepareCallArgs(initSig, e)
+		if err != nil {
+			return "", err
+		}
+		g.emitStaticCall(instPtr, ct, owner, "__init__", parts, &types.NoneType{})
 	}
 
 	return instPtr, nil
@@ -490,7 +495,7 @@ func (g *Generator) fieldAllocSize(t types.Type) int {
 		return 8
 	case *types.BoolType:
 		return 8 // over-allocate for simple alignment
-	case *types.StrType, *types.ListType, *types.MapType, *types.InstanceType:
+	case *types.StrType, *types.ListType, *types.MapType, *types.InstanceType, *types.IteratorType:
 		return 8
 	}
 	return 8
@@ -631,7 +636,7 @@ func (g *Generator) printInstance(val string, inst *types.InstanceType) {
 }
 
 // emitInstanceMethodCall emits a virtual method call on `attr.Object`.
-func (g *Generator) emitInstanceMethodCall(attr *parser.AttrExpr, inst *types.InstanceType, args []parser.Expr) (string, error) {
+func (g *Generator) emitInstanceMethodCall(attr *parser.AttrExpr, inst *types.InstanceType, e *parser.CallExpr) (string, error) {
 	selfVal, err := g.emitExpr(attr.Object)
 	if err != nil {
 		return "", err
@@ -640,28 +645,16 @@ func (g *Generator) emitInstanceMethodCall(attr *parser.AttrExpr, inst *types.In
 	if !ok {
 		return "", fmt.Errorf("%s has no method %s", inst.Class.Name, attr.Attr)
 	}
-	argVals := []string{}
-	argTypes := []types.Type{}
-	for i, a := range args {
-		val, err := g.emitExpr(a)
-		if err != nil {
-			return "", err
-		}
-		at := a.GetResolvedType().(types.Type)
-		// Upcast to the method's declared param type if necessary.
-		if i < len(sig.Params) {
-			val = g.castToType(val, at, sig.Params[i])
-			at = sig.Params[i]
-		}
-		argVals = append(argVals, val)
-		argTypes = append(argTypes, at)
+	parts, llvmTypes, err := g.prepareCallArgs(sig, e)
+	if err != nil {
+		return "", err
 	}
-	return g.emitVirtualCall(selfVal, inst.Class, attr.Attr, argVals, argTypes, sig.Return), nil
+	return g.emitVirtualCall(selfVal, inst.Class, attr.Attr, parts, llvmTypes, sig.Return), nil
 }
 
 // emitSuperCall handles `super().method(args)` — a direct call to the base
 // class's method function (non-virtual).
-func (g *Generator) emitSuperCall(attr *parser.AttrExpr, args []parser.Expr) (string, error) {
+func (g *Generator) emitSuperCall(attr *parser.AttrExpr, e *parser.CallExpr) (string, error) {
 	if g.currentClass == nil {
 		return "", fmt.Errorf("super() used outside a class method")
 	}
@@ -700,22 +693,11 @@ func (g *Generator) emitSuperCall(attr *parser.AttrExpr, args []parser.Expr) (st
 		sig = &types.FuncType{Params: []types.Type{}, Return: &types.NoneType{}}
 	}
 
-	argVals := []string{}
-	argTypes := []types.Type{}
-	for i, a := range args {
-		val, err := g.emitExpr(a)
-		if err != nil {
-			return "", err
-		}
-		at := a.GetResolvedType().(types.Type)
-		if i < len(sig.Params) {
-			val = g.castToType(val, at, sig.Params[i])
-			at = sig.Params[i]
-		}
-		argVals = append(argVals, val)
-		argTypes = append(argTypes, at)
+	parts, _, err := g.prepareCallArgs(sig, e)
+	if err != nil {
+		return "", err
 	}
-	return g.emitStaticCall(selfVal, g.currentClass, owner, attr.Attr, argVals, argTypes, sig.Return), nil
+	return g.emitStaticCall(selfVal, g.currentClass, owner, attr.Attr, parts, sig.Return), nil
 }
 
 // findMethodOwner locates the class in ct's ancestry (including ct itself)

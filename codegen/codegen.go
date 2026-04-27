@@ -69,6 +69,23 @@ type Generator struct {
 	// @extern functions. Prevents LLVM "invalid redefinition" errors when
 	// multiple modules bind to the same C symbol via explicit @extern("name").
 	declaredExterns map[string]bool
+
+	// Generator codegen state. Each `def` whose body contains a `yield`
+	// is compiled into a synthesized class (the "gen class") implementing
+	// the iterator protocol. genFuncClass maps the source FuncDef to its
+	// gen class; genClassFunc is the reverse. genLayouts holds the
+	// per-generator field layout used by emitGeneratorMethods.
+	genFuncClass map[*parser.FuncDef]*types.ClassType
+	genClassFunc map[*types.ClassType]*parser.FuncDef
+	genLayouts   map[*types.ClassType]*genLayout
+	// genClassSet marks classes synthesized by the generator pipeline so
+	// emitClassMethods knows to skip them (we emit __iter__ and __next__
+	// ourselves, with a custom state-machine body).
+	genClassSet map[*types.ClassType]bool
+	// genCtx is non-nil only while emitting a generator's __next__ body;
+	// emitYieldStmt consults it to find the state pointer and resume
+	// label table.
+	genCtx *genEmitCtx
 }
 
 type varInfo struct {
@@ -86,6 +103,10 @@ func New() *Generator {
 		slotOrder:       map[*types.ClassType][]string{},
 		slotOwner:       map[*types.ClassType][]*types.ClassType{},
 		declaredExterns: map[string]bool{},
+		genFuncClass:    map[*parser.FuncDef]*types.ClassType{},
+		genClassFunc:    map[*types.ClassType]*parser.FuncDef{},
+		genLayouts:      map[*types.ClassType]*genLayout{},
+		genClassSet:     map[*types.ClassType]bool{},
 	}
 }
 
@@ -132,6 +153,19 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 		}
 	}
 
+	// Synthesize a class per generator function (`def` with `yield` body).
+	// Must run BEFORE emitClassTypes so the gen-class struct/vtable types
+	// are emitted alongside user classes.
+	for _, m := range modules {
+		for _, stmt := range m.Program.Stmts {
+			if fd, ok := stmt.(*parser.FuncDef); ok && fd.IsGenerator {
+				if err := g.registerGenerator(m.ID, fd); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+
 	// Collect string constants across all modules
 	g.addStringConst(" ")
 	// Built-in messages used by compiler-inserted runtime checks.
@@ -140,6 +174,7 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 	g.addStringConst("float division by zero")
 	g.addStringConst("float floor division by zero")
 	g.addStringConst("float modulo")
+	g.addStringConst("StopIteration")
 	for _, m := range modules {
 		for _, stmt := range m.Program.Stmts {
 			g.collectStringsInStmt(stmt)
@@ -202,6 +237,15 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 		for _, ct := range m.Classes {
 			if err := g.emitClassMethods(ct); err != nil {
 				return "", err
+			}
+		}
+		// Emit generator class methods (__iter__ and __next__) for any
+		// generator funcdefs in this module.
+		for _, stmt := range m.Program.Stmts {
+			if fd, ok := stmt.(*parser.FuncDef); ok && fd.IsGenerator {
+				if err := g.emitGeneratorMethods(fd); err != nil {
+					return "", err
+				}
 			}
 		}
 	}
@@ -357,7 +401,7 @@ func (g *Generator) zeroValue(t types.Type) string {
 		return "0.0"
 	case *types.BoolType:
 		return "0"
-	case *types.StrType, *types.ListType, *types.MapType:
+	case *types.StrType, *types.ListType, *types.MapType, *types.IteratorType:
 		return "null"
 	case *types.NoneType:
 		return "zeroinitializer"
@@ -445,6 +489,7 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare i8* @spy_map_get(i8*, i8*)")
 	g.emitLine("declare i1 @spy_map_contains(i8*, i8*)")
 	g.emitLine("declare i64 @spy_map_len(i8*)")
+	g.emitLine("declare void @spy_map_extend(i8*, i8*)")
 	g.emitLine("declare i8* @spy_int_to_str(i64)")
 	g.emitLine("declare i8* @spy_float_to_str(double)")
 	g.emitLine("declare i8* @spy_bool_to_str(i1)")
@@ -495,11 +540,14 @@ func (g *Generator) emitExternDecl(fd *parser.FuncDef) {
 }
 
 func (g *Generator) emitFuncDef(fd *parser.FuncDef) error {
+	if fd.IsGenerator {
+		return g.emitGeneratorFactory(fd)
+	}
 	retType := g.getResolvedType(fd)
 	retLLVM := g.llvmType(retType)
 	params := []string{}
 	for _, p := range fd.Params {
-		pType := g.resolveTypeAnnotation(p.TypeAnn)
+		pType := g.paramRuntimeType(p)
 		params = append(params, fmt.Sprintf("%s %%%s", g.llvmType(pType), p.Name))
 	}
 
@@ -519,7 +567,7 @@ func (g *Generator) emitFuncDef(fd *parser.FuncDef) error {
 
 	// Alloca for params
 	for _, p := range fd.Params {
-		pType := g.resolveTypeAnnotation(p.TypeAnn)
+		pType := g.paramRuntimeType(p)
 		llvmT := g.llvmType(pType)
 		allocaName := g.newTmp()
 		g.emitAlloca(allocaName, llvmT)
@@ -556,6 +604,19 @@ func (g *Generator) getResolvedType(fd *parser.FuncDef) types.Type {
 	return g.resolveTypeAnnotation(fd.ReturnType)
 }
 
+// paramRuntimeType returns the type of a function parameter as seen inside
+// the body. Regular params resolve their annotation; *args becomes list[T];
+// **kwargs becomes map[str, T].
+func (g *Generator) paramRuntimeType(p parser.FuncParam) types.Type {
+	switch p.Kind {
+	case parser.ParamVarArgs:
+		return &types.ListType{Elem: g.resolveTypeAnnotation(p.TypeAnn)}
+	case parser.ParamKwargs:
+		return &types.MapType{Key: &types.StrType{}, Value: g.resolveTypeAnnotation(p.TypeAnn)}
+	}
+	return g.resolveTypeAnnotation(p.TypeAnn)
+}
+
 func (g *Generator) resolveTypeAnnotation(ann *parser.TypeAnnotation) types.Type {
 	switch ann.Name {
 	case "int":
@@ -586,6 +647,10 @@ func (g *Generator) resolveTypeAnnotation(ann *parser.TypeAnnotation) types.Type
 			elems[i] = g.resolveTypeAnnotation(p)
 		}
 		return &types.TupleType{Elements: elems}
+	case "Iterator":
+		if len(ann.Params) == 1 {
+			return &types.IteratorType{Elem: g.resolveTypeAnnotation(ann.Params[0])}
+		}
 	}
 	if ct, ok := g.classByName[ann.Name]; ok {
 		return &types.InstanceType{Class: ct}
@@ -645,6 +710,8 @@ func (g *Generator) emitStmt(stmt parser.Stmt) error {
 		return g.emitTryStmt(s)
 	case *parser.RaiseStmt:
 		return g.emitRaiseStmt(s)
+	case *parser.YieldStmt:
+		return g.emitYieldStmt(s)
 	default:
 		return fmt.Errorf("unknown statement type: %T", stmt)
 	}
@@ -753,17 +820,21 @@ func (g *Generator) emitAssignStmt(s *parser.AssignStmt) error {
 	}
 	valType, _ := s.Value.GetResolvedType().(types.Type)
 
-	var varType types.Type
-	if s.TypeAnn != nil {
-		varType = g.resolveTypeAnnotation(s.TypeAnn)
-	} else if info, ok := g.vars[s.Name]; ok {
-		// Reassignment
+	// If the name is already bound, store into the existing slot (whether
+	// it's a stack alloca or a generator-state field GEP). Annotated
+	// re-assignments use this path too — the annotation is just a
+	// human-readable echo of the type.
+	if info, ok := g.vars[s.Name]; ok {
 		llvmT := g.llvmType(info.typ)
 		if valType != nil {
 			val = g.castToType(val, valType, info.typ)
 		}
 		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", llvmT, val, llvmT, info.llvmName))
 		return nil
+	}
+	var varType types.Type
+	if s.TypeAnn != nil {
+		varType = g.resolveTypeAnnotation(s.TypeAnn)
 	} else {
 		// First binding with inferred type (no annotation).
 		if valType == nil {
@@ -1204,6 +1275,8 @@ func (g *Generator) emitForCollection(s *parser.ForStmt) error {
 		return g.emitForList(s, collVal, t)
 	case *types.StrType:
 		return g.emitForStr(s, collVal)
+	case *types.IteratorType:
+		return g.emitForIterator(s, collVal, t)
 	}
 
 	return fmt.Errorf("cannot iterate over %s", iterType)
@@ -1332,6 +1405,11 @@ func (g *Generator) emitForStr(s *parser.ForStmt, strVal string) error {
 
 func (g *Generator) emitReturnStmt(s *parser.ReturnStmt) error {
 	if s.Value == nil {
+		if g.genCtx != nil {
+			g.emitLine(fmt.Sprintf("  br label %%%s", g.genCtx.exhaustedLbl))
+			g.emitLine(fmt.Sprintf("%s:", g.newLabel("after.gen.return")))
+			return nil
+		}
 		if g.routeExit(returnKind, "", "void") {
 			g.emitLine(fmt.Sprintf("%s:", g.newLabel("after.return")))
 			return nil
@@ -1484,11 +1562,17 @@ func (g *Generator) emitExpr(expr parser.Expr) (string, error) {
 }
 
 func (g *Generator) emitStrLit(e *parser.StrLit) (string, error) {
-	idx := g.getStringIndex(e.Value)
+	return g.emitStringLiteral(e.Value), nil
+}
+
+// emitStringLiteral materializes a literal Go string as a runtime spy_str
+// (i8* handle), interning the bytes via getStringIndex.
+func (g *Generator) emitStringLiteral(s string) string {
+	idx := g.getStringIndex(s)
 	tmp := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_new(i8* getelementptr ([%d x i8], [%d x i8]* @.str.%d, i64 0, i64 0), i64 %d)",
-		tmp, len(e.Value), len(e.Value), idx, len(e.Value)))
-	return tmp, nil
+		tmp, len(s), len(s), idx, len(s)))
+	return tmp
 }
 
 // emitBytesLit uses the same runtime layout as strings: a length-prefixed
@@ -1535,7 +1619,8 @@ func (g *Generator) emitBinaryExpr(e *parser.BinaryExpr) (string, error) {
 			rightVal = g.castToType(rightVal, rightT, sig.Params[0])
 			rightT = sig.Params[0]
 		}
-		return g.emitVirtualCall(leftVal, inst.Class, dunder, []string{rightVal}, []types.Type{rightT}, sig.Return), nil
+		rightLLVM := g.llvmType(rightT)
+		return g.emitVirtualCall(leftVal, inst.Class, dunder, []string{fmt.Sprintf("%s %s", rightLLVM, rightVal)}, []string{rightLLVM}, sig.Return), nil
 	}
 
 	result := g.newTmp()
@@ -1757,6 +1842,8 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 		case "range":
 			// range should not be called as a standalone expression
 			return "", fmt.Errorf("range() can only be used in for loops")
+		case "next":
+			return g.emitNextCall(e)
 		}
 	}
 
@@ -1766,15 +1853,15 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 		// attribute names a class exported by the module. Route to the same
 		// constructor path as a bare ClassName(...) call.
 		if ct, ok := e.Func.GetResolvedType().(*types.ClassType); ok {
-			return g.emitConstructorCall(ct, e.Args)
+			return g.emitConstructorCall(ct, e)
 		}
 		// super().method(...) — direct (non-virtual) call to base's method.
 		if _, isSuper := attr.Object.(*parser.SuperExpr); isSuper {
-			return g.emitSuperCall(attr, e.Args)
+			return g.emitSuperCall(attr, e)
 		}
 		// Instance method call via vtable.
 		if inst, isInst := attr.Object.GetResolvedType().(*types.InstanceType); isInst {
-			return g.emitInstanceMethodCall(attr, inst, e.Args)
+			return g.emitInstanceMethodCall(attr, inst, e)
 		}
 		// If the receiver is a module, it's a cross-module function call.
 		if modT, isMod := attr.Object.GetResolvedType().(*types.ModuleType); isMod {
@@ -1796,7 +1883,7 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 	// a ClassType. Dispatch through emitConstructorCall.
 	if ident, ok := e.Func.(*parser.IdentExpr); ok {
 		if ct, isClass := ident.GetResolvedType().(*types.ClassType); isClass {
-			return g.emitConstructorCall(ct, e.Args)
+			return g.emitConstructorCall(ct, e)
 		}
 	}
 
@@ -1824,35 +1911,19 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 
 func (g *Generator) emitUserCall(mangled string, e *parser.CallExpr) (string, error) {
 	// Fetch the callee's FuncType (if known) to know the declared parameter
-	// types — needed for subclass upcasts.
+	// types — needed for subclass upcasts and varargs/kwargs handling.
 	var calleeSig *types.FuncType
 	if ft, ok := e.Func.GetResolvedType().(*types.FuncType); ok {
 		calleeSig = ft
 	}
 
-	argVals := []string{}
-	argTypes := []types.Type{}
-	for i, arg := range e.Args {
-		val, err := g.emitExpr(arg)
-		if err != nil {
-			return "", err
-		}
-		at := arg.GetResolvedType().(types.Type)
-		if calleeSig != nil && i < len(calleeSig.Params) {
-			val = g.castToType(val, at, calleeSig.Params[i])
-			at = calleeSig.Params[i]
-		}
-		argVals = append(argVals, val)
-		argTypes = append(argTypes, at)
+	args, _, err := g.prepareCallArgs(calleeSig, e)
+	if err != nil {
+		return "", err
 	}
 
 	retType := e.GetResolvedType().(types.Type)
 	retLLVM := g.llvmType(retType)
-
-	args := []string{}
-	for i, val := range argVals {
-		args = append(args, fmt.Sprintf("%s %s", g.llvmType(argTypes[i]), val))
-	}
 
 	if _, ok := retType.(*types.NoneType); ok {
 		g.emitLine(fmt.Sprintf("  call void @%s(%s)", mangled, strings.Join(args, ", ")))
@@ -1862,6 +1933,286 @@ func (g *Generator) emitUserCall(mangled string, e *parser.CallExpr) (string, er
 	result := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = call %s @%s(%s)", result, retLLVM, mangled, strings.Join(args, ", ")))
 	return result, nil
+}
+
+// prepareCallArgs emits IR to evaluate every argument in the call (positional,
+// *unpack, kwarg, **unpack), collects them into the right LLVM call shape for
+// the callee, and returns the formatted "type val" parts to splice into the
+// `call` instruction along with a parallel list of just-LLVM-type strings
+// (used by emitVirtualCall to build the function-pointer cast). If callee is
+// nil, falls back to plain positional pass-through.
+func (g *Generator) prepareCallArgs(callee *types.FuncType, e *parser.CallExpr) ([]string, []string, error) {
+	if callee == nil {
+		parts := []string{}
+		llvmTypes := []string{}
+		for _, arg := range e.Args {
+			val, err := g.emitExpr(arg)
+			if err != nil {
+				return nil, nil, err
+			}
+			at := arg.GetResolvedType().(types.Type)
+			parts = append(parts, fmt.Sprintf("%s %s", g.llvmType(at), val))
+			llvmTypes = append(llvmTypes, g.llvmType(at))
+		}
+		return parts, llvmTypes, nil
+	}
+
+	posVals := make([]callPosArg, 0, len(e.Args))
+	for i, arg := range e.Args {
+		v, err := g.emitExpr(arg)
+		if err != nil {
+			return nil, nil, err
+		}
+		t := arg.GetResolvedType().(types.Type)
+		posVals = append(posVals, callPosArg{v, t, e.IsArgStar(i)})
+	}
+
+	kwVals := make([]callKwArg, 0, len(e.Kwargs))
+	for _, kw := range e.Kwargs {
+		v, err := g.emitExpr(kw.Value)
+		if err != nil {
+			return nil, nil, err
+		}
+		t := kw.Value.GetResolvedType().(types.Type)
+		kwVals = append(kwVals, callKwArg{kw.Name, v, t, kw.IsDStar})
+	}
+
+	nNamed := len(callee.Params)
+	kwOnly := callee.KwOnlyStart
+	if callee.VarArgsElem == nil {
+		kwOnly = nNamed
+	}
+	if kwOnly < 0 || kwOnly > nNamed {
+		kwOnly = nNamed
+	}
+
+	namedVals := make([]string, nNamed)
+	namedFilled := make([]bool, nNamed)
+
+	overflow := []callPosArg{}
+
+	posIdx := 0
+	for _, pv := range posVals {
+		if pv.isStar {
+			overflow = append(overflow, pv)
+			continue
+		}
+		if posIdx < kwOnly {
+			namedVals[posIdx] = g.castToType(pv.val, pv.t, callee.Params[posIdx])
+			namedFilled[posIdx] = true
+			posIdx++
+		} else {
+			overflow = append(overflow, pv)
+		}
+	}
+
+	leftoverKw := []callKwArg{}
+	for _, kv := range kwVals {
+		if kv.isDStar {
+			leftoverKw = append(leftoverKw, kv)
+			continue
+		}
+		matched := false
+		for i := 0; i < nNamed; i++ {
+			if !namedFilled[i] && i < len(callee.ParamNames) && callee.ParamNames[i] == kv.name {
+				namedVals[i] = g.castToType(kv.val, kv.t, callee.Params[i])
+				namedFilled[i] = true
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			leftoverKw = append(leftoverKw, kv)
+		}
+	}
+
+	parts := []string{}
+	llvmTypes := []string{}
+
+	emitNamedSlot := func(i int) error {
+		if !namedFilled[i] {
+			if i < len(callee.ParamDefaults) && callee.ParamDefaults[i] != nil {
+				defExpr := callee.ParamDefaults[i]
+				val, err := g.emitExpr(defExpr)
+				if err != nil {
+					return err
+				}
+				dt, _ := defExpr.GetResolvedType().(types.Type)
+				if dt == nil {
+					dt = callee.Params[i]
+				}
+				namedVals[i] = g.castToType(val, dt, callee.Params[i])
+				namedFilled[i] = true
+			} else {
+				pname := fmt.Sprintf("#%d", i+1)
+				if i < len(callee.ParamNames) {
+					pname = callee.ParamNames[i]
+				}
+				return fmt.Errorf("internal: parameter %s not statically filled for call", pname)
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", g.llvmType(callee.Params[i]), namedVals[i]))
+		llvmTypes = append(llvmTypes, g.llvmType(callee.Params[i]))
+		return nil
+	}
+
+	// Emit in callee's source order: positional named, *args handle, kw-only
+	// named, **kwargs handle. emitFuncDef walks fd.Params in this same order.
+	for i := 0; i < kwOnly; i++ {
+		if err := emitNamedSlot(i); err != nil {
+			return nil, nil, err
+		}
+	}
+	if callee.VarArgsElem != nil {
+		listVal := g.buildVarArgsList(callee.VarArgsElem, overflow)
+		parts = append(parts, "i8* "+listVal)
+		llvmTypes = append(llvmTypes, "i8*")
+	}
+	for i := kwOnly; i < nNamed; i++ {
+		if err := emitNamedSlot(i); err != nil {
+			return nil, nil, err
+		}
+	}
+	if callee.KwargsElem != nil {
+		mapVal := g.buildKwargsMap(callee.KwargsElem, leftoverKw)
+		parts = append(parts, "i8* "+mapVal)
+		llvmTypes = append(llvmTypes, "i8*")
+	}
+
+	return parts, llvmTypes, nil
+}
+
+// callPosArg holds an evaluated positional argument (or *unpack source list)
+// destined for a callee with *args.
+type callPosArg struct {
+	val    string
+	t      types.Type
+	isStar bool
+}
+
+// callKwArg holds an evaluated keyword argument (or **unpack source map)
+// destined for a callee with **kwargs.
+type callKwArg struct {
+	name    string
+	val     string
+	t       types.Type
+	isDStar bool
+}
+
+// buildVarArgsList emits IR that builds a fresh runtime list[elem] containing
+// the overflow positional args (and *unpacked list contents in source order).
+// Returns the LLVM value name of the resulting list handle (i8*).
+func (g *Generator) buildVarArgsList(elem types.Type, overflow []callPosArg) string {
+	elemSize := g.typeSize(elem)
+	elemLLVM := g.llvmType(elem)
+
+	listVal := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_list_new(i64 %d)", listVal, elemSize))
+
+	for _, p := range overflow {
+		if !p.isStar {
+			v := g.castToType(p.val, p.t, elem)
+			tmpAlloca := g.newTmp()
+			g.emitAlloca(tmpAlloca, elemLLVM)
+			g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, v, elemLLVM, tmpAlloca))
+			cast := g.newTmp()
+			g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", cast, elemLLVM, tmpAlloca))
+			g.emitLine(fmt.Sprintf("  call void @spy_list_append(i8* %s, i8* %s)", listVal, cast))
+			continue
+		}
+		// *unpack: iterate the source list and append each element.
+		// Source list type is *types.ListType{Elem: srcElem}.
+		srcList := p.val
+		srcElem := elem
+		if lt, ok := p.t.(*types.ListType); ok {
+			srcElem = lt.Elem
+		}
+		srcElemLLVM := g.llvmType(srcElem)
+
+		lenTmp := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_list_len(i8* %s)", lenTmp, srcList))
+
+		idxAlloca := g.newTmp()
+		g.emitAlloca(idxAlloca, "i64")
+		g.emitLine(fmt.Sprintf("  store i64 0, i64* %s", idxAlloca))
+
+		head := g.newLabel("vararg.unpack.head")
+		body := g.newLabel("vararg.unpack.body")
+		end := g.newLabel("vararg.unpack.end")
+
+		g.emitLine(fmt.Sprintf("  br label %%%s", head))
+		g.emitLine(fmt.Sprintf("%s:", head))
+		idxV := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load i64, i64* %s", idxV, idxAlloca))
+		cmp := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = icmp slt i64 %s, %s", cmp, idxV, lenTmp))
+		g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", cmp, body, end))
+
+		g.emitLine(fmt.Sprintf("%s:", body))
+		elemPtr := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_list_get(i8* %s, i64 %s)", elemPtr, srcList, idxV))
+		// Load element from i8* as srcElemLLVM, then cast to elem if needed.
+		typedPtr := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", typedPtr, elemPtr, srcElemLLVM))
+		loaded := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", loaded, srcElemLLVM, srcElemLLVM, typedPtr))
+		casted := g.castToType(loaded, srcElem, elem)
+
+		// Append: alloca elem, store, bitcast, call append.
+		tmpAlloca := g.newTmp()
+		g.emitAlloca(tmpAlloca, elemLLVM)
+		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, casted, elemLLVM, tmpAlloca))
+		castVal := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", castVal, elemLLVM, tmpAlloca))
+		g.emitLine(fmt.Sprintf("  call void @spy_list_append(i8* %s, i8* %s)", listVal, castVal))
+
+		nextIdx := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = add i64 %s, 1", nextIdx, idxV))
+		g.emitLine(fmt.Sprintf("  store i64 %s, i64* %s", nextIdx, idxAlloca))
+		g.emitLine(fmt.Sprintf("  br label %%%s", head))
+
+		g.emitLine(fmt.Sprintf("%s:", end))
+	}
+
+	return listVal
+}
+
+// buildKwargsMap emits IR that builds a fresh runtime map[str, value] from any
+// leftover kwargs and **unpacks. Returns the LLVM value name of the map handle.
+func (g *Generator) buildKwargsMap(value types.Type, leftover []callKwArg) string {
+	valSize := g.typeSize(value)
+	valLLVM := g.llvmType(value)
+
+	mapVal := g.newTmp()
+	// hashType=1 for str keys.
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_map_new(i64 8, i64 %d, i64 1)", mapVal, valSize))
+
+	for _, kv := range leftover {
+		if kv.isDStar {
+			g.emitLine(fmt.Sprintf("  call void @spy_map_extend(i8* %s, i8* %s)", mapVal, kv.val))
+			continue
+		}
+		// Static key: emit a string literal handle.
+		keyVal := g.emitStringLiteral(kv.name)
+
+		castedVal := g.castToType(kv.val, kv.t, value)
+
+		keyAlloca := g.newTmp()
+		g.emitAlloca(keyAlloca, "i8*")
+		g.emitLine(fmt.Sprintf("  store i8* %s, i8** %s", keyVal, keyAlloca))
+		keyCast := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = bitcast i8** %s to i8*", keyCast, keyAlloca))
+
+		valAlloca := g.newTmp()
+		g.emitAlloca(valAlloca, valLLVM)
+		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", valLLVM, castedVal, valLLVM, valAlloca))
+		valCast := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", valCast, valLLVM, valAlloca))
+
+		g.emitLine(fmt.Sprintf("  call void @spy_map_set(i8* %s, i8* %s, i8* %s)", mapVal, keyCast, valCast))
+	}
+
+	return mapVal
 }
 
 func (g *Generator) emitLenCall(e *parser.CallExpr) (string, error) {
@@ -2213,6 +2564,12 @@ func (g *Generator) llvmType(t types.Type) string {
 		return "i8*"
 	case *types.InstanceType:
 		return fmt.Sprintf("%%Class.%s*", v.Class.Name)
+	case *types.IteratorType:
+		// Iterators are opaque pointers — different generator types have
+		// different concrete struct layouts but share a generic vtable
+		// prefix that for-loops and next() dispatch through.
+		_ = v
+		return "i8*"
 	case *types.TupleType:
 		return g.tupleStructType(v) + "*"
 	}
@@ -2361,6 +2718,11 @@ func (g *Generator) collectStringsInStmt(stmt parser.Stmt) {
 		g.collectStringsInExpr(s.Value)
 	case *parser.ClassDef:
 		for _, m := range s.Methods {
+			for _, p := range m.Params {
+				if p.Default != nil {
+					g.collectStringsInExpr(p.Default)
+				}
+			}
 			for _, stmt := range m.Body {
 				g.collectStringsInStmt(stmt)
 			}
@@ -2390,6 +2752,11 @@ func (g *Generator) collectStringsInStmt(stmt parser.Stmt) {
 			g.collectStringsInStmt(stmt)
 		}
 	case *parser.FuncDef:
+		for _, p := range s.Params {
+			if p.Default != nil {
+				g.collectStringsInExpr(p.Default)
+			}
+		}
 		for _, stmt := range s.Body {
 			g.collectStringsInStmt(stmt)
 		}
@@ -2429,6 +2796,13 @@ func (g *Generator) collectStringsInExpr(expr parser.Expr) {
 		g.collectStringsInExpr(e.Func)
 		for _, arg := range e.Args {
 			g.collectStringsInExpr(arg)
+		}
+		for _, kw := range e.Kwargs {
+			if !kw.IsDStar {
+				// Kwarg name is materialized as a runtime str at the call site.
+				g.addStringConst(kw.Name)
+			}
+			g.collectStringsInExpr(kw.Value)
 		}
 	case *parser.IndexExpr:
 		g.collectStringsInExpr(e.Object)
