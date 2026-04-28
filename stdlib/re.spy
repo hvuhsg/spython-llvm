@@ -1,0 +1,361 @@
+# stdlib/re.spy — regular expressions, backed by libc's POSIX extended
+# regex engine (regcomp/regexec).
+#
+# This is a useful subset of CPython's `re`; it is not a drop-in. Notable
+# syntax differences vs. Python re:
+#   * No \d / \w / \s / \b backslash classes — write [0-9], [a-zA-Z0-9_],
+#     [ \t\n\r\f\v] explicitly, and use ^/$ for word-style anchoring
+#     where possible.
+#   * No (?:...) non-capturing groups, no (?=...)/(?!...)/(?<...)
+#     lookaround, no (?P<name>...) named groups, no inline (?i) flags.
+#   * No \1..\9 backreferences inside the pattern (POSIX ERE doesn't
+#     allow them; BRE does, but we ask for ERE).
+#   * `re.IGNORECASE` and `re.MULTILINE` work. `re.DOTALL` is accepted
+#     but is a noop — POSIX `.` already matches \n by default; flipping
+#     `MULTILINE` is what restricts it. There is no spython spelling for
+#     "MULTILINE without restricting dot," so picking one is a
+#     compromise we accept here.
+#   * Embedded NUL bytes in the input string truncate the search,
+#     because POSIX regexec is null-terminated.
+#
+# Where Python's `re.search` returns `None` for "no match," spython has
+# no Optional sugar for instance types yet, so search/match/fullmatch
+# always return a Match. Check `m.matched` (a bool field) to decide
+# whether the result is real.
+
+class error(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+
+# Flag bits. Combine with `|`. Mirrored in re.c's map_cflags.
+IGNORECASE = 1
+I = 1
+MULTILINE = 2
+M = 2
+# DOTALL is accepted for compatibility but does not change behavior;
+# see the module docstring above.
+DOTALL = 0
+S = 0
+
+
+@extern
+def _exec(pat: str, s: str, start: int, flags: int, mode: int) -> int: ...
+
+@extern
+def _group_count() -> int: ...
+
+@extern
+def _group_start(i: int) -> int: ...
+
+@extern
+def _group_end(i: int) -> int: ...
+
+@extern
+def _error_msg() -> str: ...
+
+
+# _MODE_* are the integer arguments understood by spy_re__exec.
+_MODE_SEARCH = 0
+_MODE_MATCH = 1
+_MODE_FULLMATCH = 2
+
+
+def _check_compile(rc: int) -> None:
+    if rc == -1:
+        e: error = error(_error_msg())
+        raise e
+
+
+def _snapshot_match(s: str, matched: bool) -> Match:
+    m: Match = Match(s)
+    m.matched = matched
+    if not matched:
+        return m
+    n: int = _group_count()
+    i: int = 0
+    while i < n:
+        m.starts.append(_group_start(i))
+        m.ends.append(_group_end(i))
+        i = i + 1
+    return m
+
+
+class Match:
+    def __init__(self, s: str):
+        empty_starts: list[int] = []
+        empty_ends: list[int] = []
+        self.string = s
+        self.matched = False
+        self.starts = empty_starts
+        self.ends = empty_ends
+
+    def _check(self, group: int) -> None:
+        if not self.matched:
+            e0: ValueError = ValueError("no match")
+            raise e0
+        if group < 0 or group >= len(self.starts):
+            e1: IndexError = IndexError("no such group")
+            raise e1
+
+    def group(self, group: int = 0) -> str:
+        self._check(group)
+        st: int = self.starts[group]
+        en: int = self.ends[group]
+        if st < 0:
+            return ""
+        return self.string[st:en]
+
+    def start(self, group: int = 0) -> int:
+        self._check(group)
+        return self.starts[group]
+
+    def end(self, group: int = 0) -> int:
+        self._check(group)
+        return self.ends[group]
+
+    def span(self, group: int = 0) -> tuple[int, int]:
+        self._check(group)
+        return (self.starts[group], self.ends[group])
+
+    # groups() returns groups 1..N (i.e. excludes the full-match at index
+    # 0), matching CPython. Groups that didn't participate in the match
+    # are reported as the empty string; CPython uses None there, but we
+    # have no Optional[str].
+    def groups(self) -> list[str]:
+        if not self.matched:
+            e: ValueError = ValueError("no match")
+            raise e
+        out: list[str] = []
+        i: int = 1
+        while i < len(self.starts):
+            st: int = self.starts[i]
+            en: int = self.ends[i]
+            if st < 0:
+                out.append("")
+            else:
+                out.append(self.string[st:en])
+            i = i + 1
+        return out
+
+
+def search(pattern: str, s: str, flags: int = 0) -> Match:
+    rc: int = _exec(pattern, s, 0, flags, _MODE_SEARCH)
+    _check_compile(rc)
+    return _snapshot_match(s, rc == 1)
+
+
+def match(pattern: str, s: str, flags: int = 0) -> Match:
+    rc: int = _exec(pattern, s, 0, flags, _MODE_MATCH)
+    _check_compile(rc)
+    return _snapshot_match(s, rc == 1)
+
+
+def fullmatch(pattern: str, s: str, flags: int = 0) -> Match:
+    rc: int = _exec(pattern, s, 0, flags, _MODE_FULLMATCH)
+    _check_compile(rc)
+    return _snapshot_match(s, rc == 1)
+
+
+# findall returns the full-match text for each non-overlapping match.
+# CPython returns capture-group tuples when the pattern has groups; we
+# always return the full match, because spython lists are homogeneous and
+# there is no `tuple of N strings` shape we can return for an arbitrary
+# pattern.
+def findall(pattern: str, s: str, flags: int = 0) -> list[str]:
+    out: list[str] = []
+    pos: int = 0
+    n: int = len(s)
+    while pos <= n:
+        rc: int = _exec(pattern, s, pos, flags, _MODE_SEARCH)
+        _check_compile(rc)
+        if rc == 0:
+            break
+        st: int = _group_start(0)
+        en: int = _group_end(0)
+        out.append(s[st:en])
+        if en == st:
+            pos = st + 1
+        else:
+            pos = en
+    return out
+
+
+# finditer takes flags positionally because spython generator functions
+# don't accept default-valued parameters yet. Pass 0 for "no flags".
+def finditer(pattern: str, s: str, flags: int) -> Iterator[Match]:
+    pos: int = 0
+    n: int = len(s)
+    while pos <= n:
+        rc: int = _exec(pattern, s, pos, flags, _MODE_SEARCH)
+        _check_compile(rc)
+        if rc == 0:
+            return
+        st: int = _group_start(0)
+        en: int = _group_end(0)
+        m: Match = _snapshot_match(s, True)
+        yield m
+        if en == st:
+            pos = st + 1
+        else:
+            pos = en
+
+
+# _digit returns 0..9 for "0".."9" or -1 otherwise. There's no ord()
+# in spython yet, so we go through explicit comparisons.
+def _digit(c: str) -> int:
+    if c == "0":
+        return 0
+    if c == "1":
+        return 1
+    if c == "2":
+        return 2
+    if c == "3":
+        return 3
+    if c == "4":
+        return 4
+    if c == "5":
+        return 5
+    if c == "6":
+        return 6
+    if c == "7":
+        return 7
+    if c == "8":
+        return 8
+    if c == "9":
+        return 9
+    return -1
+
+
+# Apply backreference substitutions in `repl`:
+#   \\0 .. \\9 → matched group i (empty if the group didn't participate)
+#   \\\\       → literal backslash
+# Other \X sequences pass through with the backslash intact, matching
+# CPython's lenient (pre-3.12) behavior for unknown escapes.
+def _expand(repl: str, m: Match) -> str:
+    out: str = ""
+    n: int = len(repl)
+    i: int = 0
+    while i < n:
+        c: str = repl[i:i+1]
+        if c == "\\" and i + 1 < n:
+            d: str = repl[i+1:i+2]
+            gi: int = _digit(d)
+            if gi >= 0:
+                if gi < len(m.starts):
+                    st: int = m.starts[gi]
+                    en: int = m.ends[gi]
+                    if st >= 0:
+                        out = out + m.string[st:en]
+                i = i + 2
+                continue
+            if d == "\\":
+                out = out + "\\"
+                i = i + 2
+                continue
+        out = out + c
+        i = i + 1
+    return out
+
+
+def sub(pattern: str, repl: str, s: str, count: int = 0, flags: int = 0) -> str:
+    out: str = ""
+    pos: int = 0
+    n: int = len(s)
+    nsub: int = 0
+    while pos <= n:
+        if count > 0 and nsub >= count:
+            break
+        rc: int = _exec(pattern, s, pos, flags, _MODE_SEARCH)
+        _check_compile(rc)
+        if rc == 0:
+            break
+        st: int = _group_start(0)
+        en: int = _group_end(0)
+        m: Match = _snapshot_match(s, True)
+        out = out + s[pos:st] + _expand(repl, m)
+        nsub = nsub + 1
+        if en == st:
+            if st < n:
+                out = out + s[st:st+1]
+            pos = st + 1
+        else:
+            pos = en
+    out = out + s[pos:n]
+    return out
+
+
+def subn(pattern: str, repl: str, s: str, count: int = 0, flags: int = 0) -> tuple[str, int]:
+    out: str = ""
+    pos: int = 0
+    n: int = len(s)
+    nsub: int = 0
+    while pos <= n:
+        if count > 0 and nsub >= count:
+            break
+        rc: int = _exec(pattern, s, pos, flags, _MODE_SEARCH)
+        _check_compile(rc)
+        if rc == 0:
+            break
+        st: int = _group_start(0)
+        en: int = _group_end(0)
+        m: Match = _snapshot_match(s, True)
+        out = out + s[pos:st] + _expand(repl, m)
+        nsub = nsub + 1
+        if en == st:
+            if st < n:
+                out = out + s[st:st+1]
+            pos = st + 1
+        else:
+            pos = en
+    out = out + s[pos:n]
+    return (out, nsub)
+
+
+# split returns the substrings between non-overlapping matches. Empty
+# matches don't split (matching Python's behavior up through 3.6 — 3.7+
+# treats them as splits). With capture groups in the pattern, CPython
+# also returns the captured text interleaved with the segments; we just
+# return the segments, since list[str] can't carry the alternation.
+def split(pattern: str, s: str, maxsplit: int = 0, flags: int = 0) -> list[str]:
+    out: list[str] = []
+    pos: int = 0
+    n: int = len(s)
+    nsplit: int = 0
+    while pos <= n:
+        if maxsplit > 0 and nsplit >= maxsplit:
+            break
+        rc: int = _exec(pattern, s, pos, flags, _MODE_SEARCH)
+        _check_compile(rc)
+        if rc == 0:
+            break
+        st: int = _group_start(0)
+        en: int = _group_end(0)
+        if en == st:
+            if st >= n:
+                break
+            pos = st + 1
+            continue
+        out.append(s[pos:st])
+        pos = en
+        nsplit = nsplit + 1
+    out.append(s[pos:n])
+    return out
+
+
+# escape backslash-prefixes every POSIX-ERE metacharacter in `s` so it
+# can be embedded as a literal in a pattern.
+def escape(s: str) -> str:
+    out: str = ""
+    n: int = len(s)
+    i: int = 0
+    while i < n:
+        c: str = s[i:i+1]
+        if (c == "." or c == "^" or c == "$" or c == "*" or c == "+"
+            or c == "?" or c == "(" or c == ")" or c == "[" or c == "]"
+            or c == "{" or c == "}" or c == "|" or c == "\\"):
+            out = out + "\\" + c
+        else:
+            out = out + c
+        i = i + 1
+    return out
