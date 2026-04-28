@@ -526,19 +526,63 @@ func (p *Parser) parsePostfix() (Expr, error) {
 			}
 			expr = callExpr
 		case lexer.TOKEN_LBRACK:
-			// Index
+			// Index or slice. The form is one of:
+			//   [a]            → IndexExpr
+			//   [a:b], [a:b:c] → SliceExpr (any of low/high/step may be omitted)
+			//   [:b], [::c]    → SliceExpr with absent low
+			//   [:], [::], etc.→ SliceExpr with all absent
 			p.advance()
-			index, err := p.parseExpr(0)
+			lbrackPos := expr.GetPos()
+			parseSlicePart := func() (Expr, error) {
+				// Returns nil if the next token is a slice delimiter (':' or ']').
+				if t := p.peek().Type; t == lexer.TOKEN_COLON || t == lexer.TOKEN_RBRACK {
+					return nil, nil
+				}
+				return p.parseExpr(0)
+			}
+			low, err := parseSlicePart()
 			if err != nil {
 				return nil, err
 			}
-			if err := p.expect(lexer.TOKEN_RBRACK); err != nil {
-				return nil, err
-			}
-			expr = &IndexExpr{
-				Pos:    expr.GetPos(),
-				Object: expr,
-				Index:  index,
+			if p.peek().Type == lexer.TOKEN_COLON {
+				// Slice form.
+				p.advance() // consume first ':'
+				high, err := parseSlicePart()
+				if err != nil {
+					return nil, err
+				}
+				var step Expr
+				if p.peek().Type == lexer.TOKEN_COLON {
+					p.advance() // consume second ':'
+					step, err = parseSlicePart()
+					if err != nil {
+						return nil, err
+					}
+				}
+				if err := p.expect(lexer.TOKEN_RBRACK); err != nil {
+					return nil, err
+				}
+				expr = &SliceExpr{
+					Pos:    lbrackPos,
+					Object: expr,
+					Low:    low,
+					High:   high,
+					Step:   step,
+				}
+			} else {
+				// Index form. low must be present.
+				if low == nil {
+					tok := p.peek()
+					return nil, fmt.Errorf("%d:%d: expected expression inside '[]'", tok.Line, tok.Col)
+				}
+				if err := p.expect(lexer.TOKEN_RBRACK); err != nil {
+					return nil, err
+				}
+				expr = &IndexExpr{
+					Pos:    lbrackPos,
+					Object: expr,
+					Index:  low,
+				}
 			}
 		case lexer.TOKEN_DOT:
 			// Attribute access

@@ -1,0 +1,80 @@
+# String slicing.
+s = "hello"
+print(s[1:4])
+print(s[:3])
+print(s[2:])
+print(s[:])
+print(s[-2:])
+print(s[:-2])
+print(s[-4:-1])
+print(s[1:4:2])
+print(s[::2])
+print(s[::-1])
+print(s[::-2])
+print(s[10:20])
+print(s[3:1])
+print("|" + s[3:3] + "|")
+
+# String length unchanged after slicing.
+print(len(s[1:4]))
+print(len(s[:]))
+
+# Slice of string-typed expression.
+print(("ab" + "cd")[1:3])
+
+# List slicing — iterate to verify contents.
+xs: list[int] = [10, 20, 30, 40, 50]
+
+a: list[int] = xs[1:4]
+print(len(a))
+for v in a:
+    print(v)
+
+b: list[int] = xs[:2]
+print(len(b))
+for v in b:
+    print(v)
+
+c: list[int] = xs[3:]
+print(len(c))
+for v in c:
+    print(v)
+
+d: list[int] = xs[::2]
+print(len(d))
+for v in d:
+    print(v)
+
+e: list[int] = xs[::-1]
+print(len(e))
+for v in e:
+    print(v)
+
+f: list[int] = xs[-3:]
+print(len(f))
+for v in f:
+    print(v)
+
+# Empty list slice.
+g: list[int] = xs[3:3]
+print(len(g))
+
+# Bytes slicing.
+data = b"hello"
+sub = data[1:4]
+print(len(sub))
+print(sub[0])
+print(sub[1])
+print(sub[2])
+
+rev = data[::-1]
+print(len(rev))
+print(rev[0])
+print(rev[4])
+
+# Bytearray slicing.
+ba = bytearray(b"world")
+basub = ba[1:4]
+print(len(basub))
+print(basub[0])
+print(basub[2])
