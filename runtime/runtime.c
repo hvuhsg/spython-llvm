@@ -235,6 +235,93 @@ int64_t spy_str_compare(const char *a, const char *b) {
     return 0;
 }
 
+// ==================== Slicing ====================
+// Python-style slice index normalization. Resolves missing low/high/step (per
+// `flags`), folds negative indices, clamps out-of-range values, and reports
+// the number of elements the resulting slice will yield. After this returns,
+// `*low_out` is the first index to copy and `*high_out` is the (exclusive on
+// the iteration side) bound; the caller iterates `i = low_out; i +=/-= step;`
+// for `out_len` steps.
+//
+// `length` is the length of the source sequence.
+static int64_t spy_slice_resolve(int64_t length, int64_t flags,
+                                 int64_t low, int64_t high, int64_t step,
+                                 int64_t *low_out, int64_t *high_out,
+                                 int64_t *step_out) {
+    if (!(flags & 4)) step = 1;
+    if (step == 0) {
+        fprintf(stderr, "slice step cannot be zero\n");
+        exit(1);
+    }
+    int64_t lo;
+    if (flags & 1) {
+        lo = low;
+        if (lo < 0) lo += length;
+        if (step > 0) {
+            if (lo < 0) lo = 0;
+            if (lo > length) lo = length;
+        } else {
+            if (lo < 0) lo = -1;
+            if (lo >= length) lo = length - 1;
+        }
+    } else {
+        lo = (step > 0) ? 0 : length - 1;
+    }
+    int64_t hi;
+    if (flags & 2) {
+        hi = high;
+        if (hi < 0) hi += length;
+        if (step > 0) {
+            if (hi < 0) hi = 0;
+            if (hi > length) hi = length;
+        } else {
+            if (hi < 0) hi = -1;
+            if (hi >= length) hi = length - 1;
+        }
+    } else {
+        hi = (step > 0) ? length : -1;
+    }
+    int64_t out_len;
+    if (step > 0) {
+        out_len = (hi > lo) ? (hi - lo + step - 1) / step : 0;
+    } else {
+        int64_t pos = -step;
+        out_len = (lo > hi) ? (lo - hi + pos - 1) / pos : 0;
+    }
+    *low_out = lo;
+    *high_out = hi;
+    *step_out = step;
+    return out_len;
+}
+
+char* spy_str_slice(const char *s, int64_t low, int64_t high, int64_t step, int64_t flags) {
+    int64_t length = *(int64_t*)s;
+    int64_t lo, hi, st;
+    int64_t out_len = spy_slice_resolve(length, flags, low, high, step, &lo, &hi, &st);
+    if (out_len <= 0) {
+        return spy_str_new("", 0);
+    }
+    const char *data = s + sizeof(int64_t);
+    if (st == 1) {
+        // Fast path: contiguous copy.
+        return spy_str_new(data + lo, out_len);
+    }
+    char *buf = (char*)malloc((size_t)out_len);
+    int64_t i = lo;
+    for (int64_t j = 0; j < out_len; j++) {
+        buf[j] = data[i];
+        i += st;
+    }
+    char *result = spy_str_new(buf, out_len);
+    free(buf);
+    return result;
+}
+
+// bytes share str's [int64_t len][data...] layout, so they slice identically.
+char* spy_bytes_slice(const char *s, int64_t low, int64_t high, int64_t step, int64_t flags) {
+    return spy_str_slice(s, low, high, step, flags);
+}
+
 // ==================== Lists ====================
 // Layout: [int64_t len][int64_t cap][int64_t elem_size][char data...]
 
@@ -285,6 +372,35 @@ void spy_list_set(char *list_ptr, int64_t index, const char *elem) {
 int64_t spy_list_len(const char *list_ptr) {
     SpyList *list = (SpyList*)list_ptr;
     return list->len;
+}
+
+char* spy_list_slice(const char *list_ptr, int64_t low, int64_t high, int64_t step, int64_t flags) {
+    SpyList *src = (SpyList*)list_ptr;
+    int64_t lo, hi, st;
+    int64_t out_len = spy_slice_resolve(src->len, flags, low, high, step, &lo, &hi, &st);
+    char *new_list = spy_list_new(src->elem_size);
+    SpyList *dst = (SpyList*)new_list;
+    if (out_len <= 0) return new_list;
+    if (out_len > dst->cap) {
+        dst->cap = out_len;
+        dst->data = GC_REALLOC(dst->data, dst->cap * dst->elem_size);
+    }
+    if (st == 1) {
+        memcpy(dst->data, src->data + lo * src->elem_size, out_len * src->elem_size);
+    } else {
+        for (int64_t j = 0; j < out_len; j++) {
+            int64_t i = lo + j * st;
+            memcpy(dst->data + j * dst->elem_size,
+                   src->data + i * src->elem_size,
+                   dst->elem_size);
+        }
+    }
+    dst->len = out_len;
+    return new_list;
+}
+
+char* spy_bytearray_slice(const char *ba_ptr, int64_t low, int64_t high, int64_t step, int64_t flags) {
+    return spy_list_slice(ba_ptr, low, high, step, flags);
 }
 
 // ==================== Maps ====================

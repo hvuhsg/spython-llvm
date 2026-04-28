@@ -83,6 +83,16 @@ char* spy_str_index(const char *s, int64_t i);
 int64_t spy_str_len(const char *s);
 int64_t spy_str_compare(const char *a, const char *b);
 
+// Slice operations. `flags` encodes which of (low, high, step) were supplied
+// at the call site: bit 0 = low present, bit 1 = high present, bit 2 = step
+// present. Missing values use Python's defaults (which depend on step's sign).
+// All four operate on the same length-prefixed-or-SpyList layouts already used
+// elsewhere; the result is a freshly-allocated value of the same kind.
+char* spy_str_slice(const char *s, int64_t low, int64_t high, int64_t step, int64_t flags);
+char* spy_bytes_slice(const char *s, int64_t low, int64_t high, int64_t step, int64_t flags);
+char* spy_list_slice(const char *list, int64_t low, int64_t high, int64_t step, int64_t flags);
+char* spy_bytearray_slice(const char *ba, int64_t low, int64_t high, int64_t step, int64_t flags);
+
 // List operations
 char* spy_list_new(int64_t elem_size);
 void spy_list_append(char *list, const char *elem);

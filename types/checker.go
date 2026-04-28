@@ -1306,6 +1306,8 @@ func (c *Checker) checkExpr(expr parser.Expr) (Type, error) {
 		t, err = c.checkCallExpr(e)
 	case *parser.IndexExpr:
 		t, err = c.checkIndexExpr(e)
+	case *parser.SliceExpr:
+		t, err = c.checkSliceExpr(e)
 	case *parser.AttrExpr:
 		t, err = c.checkAttrExpr(e)
 	case *parser.ListLit:
@@ -1888,6 +1890,49 @@ func (c *Checker) checkIndexExpr(e *parser.IndexExpr) (Type, error) {
 	}
 
 	return nil, fmt.Errorf("%d:%d: cannot index %s", e.Pos.Line, e.Pos.Col, objType)
+}
+
+func (c *Checker) checkSliceExpr(e *parser.SliceExpr) (Type, error) {
+	objType, err := c.checkExpr(e.Object)
+	if err != nil {
+		return nil, err
+	}
+
+	checkBound := func(part parser.Expr, what string) error {
+		if part == nil {
+			return nil
+		}
+		t, err := c.checkExpr(part)
+		if err != nil {
+			return err
+		}
+		if _, ok := t.(*IntType); !ok {
+			return fmt.Errorf("%d:%d: slice %s must be int, got %s", e.Pos.Line, e.Pos.Col, what, t)
+		}
+		return nil
+	}
+	if err := checkBound(e.Low, "start"); err != nil {
+		return nil, err
+	}
+	if err := checkBound(e.High, "stop"); err != nil {
+		return nil, err
+	}
+	if err := checkBound(e.Step, "step"); err != nil {
+		return nil, err
+	}
+
+	switch objType.(type) {
+	case *StrType:
+		return &StrType{}, nil
+	case *BytesType:
+		return &BytesType{}, nil
+	case *BytearrayType:
+		return &BytearrayType{}, nil
+	case *ListType:
+		return objType, nil
+	}
+
+	return nil, fmt.Errorf("%d:%d: cannot slice %s", e.Pos.Line, e.Pos.Col, objType)
 }
 
 func (c *Checker) checkAttrExpr(e *parser.AttrExpr) (Type, error) {

@@ -465,6 +465,22 @@ type IndexExpr struct {
 func (e *IndexExpr) GetPos() Pos { return e.Pos }
 func (e *IndexExpr) exprNode()   {}
 
+// SliceExpr represents a slice operation: obj[low:high] or obj[low:high:step].
+// Any of Low, High, Step may be nil to indicate omission (e.g., obj[:5] has
+// Low=nil, High=int 5, Step=nil; obj[::-1] has Low=nil, High=nil, Step=int -1).
+// Slice-assignment (`obj[a:b] = value`) is not supported.
+type SliceExpr struct {
+	baseExpr
+	Pos    Pos
+	Object Expr
+	Low    Expr
+	High   Expr
+	Step   Expr
+}
+
+func (e *SliceExpr) GetPos() Pos { return e.Pos }
+func (e *SliceExpr) exprNode()   {}
+
 type AttrExpr struct {
 	baseExpr
 	Pos    Pos

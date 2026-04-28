@@ -489,6 +489,10 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare i8* @spy_list_get(i8*, i64)")
 	g.emitLine("declare void @spy_list_set(i8*, i64, i8*)")
 	g.emitLine("declare i64 @spy_list_len(i8*)")
+	g.emitLine("declare i8* @spy_str_slice(i8*, i64, i64, i64, i64)")
+	g.emitLine("declare i8* @spy_bytes_slice(i8*, i64, i64, i64, i64)")
+	g.emitLine("declare i8* @spy_list_slice(i8*, i64, i64, i64, i64)")
+	g.emitLine("declare i8* @spy_bytearray_slice(i8*, i64, i64, i64, i64)")
 	g.emitLine("declare i8* @spy_map_new(i64, i64, i64)")
 	g.emitLine("declare void @spy_map_set(i8*, i8*, i8*)")
 	g.emitLine("declare i8* @spy_map_get(i8*, i8*)")
@@ -1663,6 +1667,9 @@ func (g *Generator) emitExpr(expr parser.Expr) (string, error) {
 	case *parser.IndexExpr:
 		return g.emitIndexExpr(e)
 
+	case *parser.SliceExpr:
+		return g.emitSliceExpr(e)
+
 	case *parser.AttrExpr:
 		// Module member access (e.g., foo.PI) — load from the global.
 		if modT, ok := e.Object.GetResolvedType().(*types.ModuleType); ok {
@@ -2589,6 +2596,66 @@ func (g *Generator) emitIndexExpr(e *parser.IndexExpr) (string, error) {
 	return "", fmt.Errorf("cannot index %s", objType)
 }
 
+// emitSliceExpr lowers obj[low:high:step] to a runtime slice helper. Each
+// missing bound is omitted from the call and signalled via a presence-flag
+// bitmask: bit 0 = low, bit 1 = high, bit 2 = step. The runtime fills in
+// Python's defaults (which depend on the sign of step) for any absent slot.
+func (g *Generator) emitSliceExpr(e *parser.SliceExpr) (string, error) {
+	objVal, err := g.emitExpr(e.Object)
+	if err != nil {
+		return "", err
+	}
+
+	flags := 0
+	lowVal := "0"
+	highVal := "0"
+	stepVal := "0"
+	if e.Low != nil {
+		flags |= 1
+		v, err := g.emitExpr(e.Low)
+		if err != nil {
+			return "", err
+		}
+		lowVal = v
+	}
+	if e.High != nil {
+		flags |= 2
+		v, err := g.emitExpr(e.High)
+		if err != nil {
+			return "", err
+		}
+		highVal = v
+	}
+	if e.Step != nil {
+		flags |= 4
+		v, err := g.emitExpr(e.Step)
+		if err != nil {
+			return "", err
+		}
+		stepVal = v
+	}
+
+	objType := e.Object.GetResolvedType().(types.Type)
+	var fn string
+	switch objType.(type) {
+	case *types.StrType:
+		fn = "spy_str_slice"
+	case *types.BytesType:
+		fn = "spy_bytes_slice"
+	case *types.BytearrayType:
+		fn = "spy_bytearray_slice"
+	case *types.ListType:
+		fn = "spy_list_slice"
+	default:
+		return "", fmt.Errorf("cannot slice %s", objType)
+	}
+
+	result := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @%s(i8* %s, i64 %s, i64 %s, i64 %s, i64 %d)",
+		result, fn, objVal, lowVal, highVal, stepVal, flags))
+	return result, nil
+}
+
 func (g *Generator) emitListLit(e *parser.ListLit) (string, error) {
 	listType := e.GetResolvedType().(*types.ListType)
 	elemSize := g.typeSize(listType.Elem)
@@ -3005,6 +3072,17 @@ func (g *Generator) collectStringsInExpr(expr parser.Expr) {
 	case *parser.IndexExpr:
 		g.collectStringsInExpr(e.Object)
 		g.collectStringsInExpr(e.Index)
+	case *parser.SliceExpr:
+		g.collectStringsInExpr(e.Object)
+		if e.Low != nil {
+			g.collectStringsInExpr(e.Low)
+		}
+		if e.High != nil {
+			g.collectStringsInExpr(e.High)
+		}
+		if e.Step != nil {
+			g.collectStringsInExpr(e.Step)
+		}
 	case *parser.AttrExpr:
 		g.collectStringsInExpr(e.Object)
 	case *parser.ListLit:
