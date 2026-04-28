@@ -84,7 +84,7 @@ go build -o spython ./cmd/spython
 
 ## What's supported
 
-- **Types:** `int`, `float`, `bool`, `str`, `list[T]`, `dict[K, V]`, `tuple`, `bytes`, `bytearray`, `None`, user-defined classes
+- **Types:** `int`, `float`, `bool`, `str`, `list[T]`, `dict[K, V]`, `set[T]`, `tuple`, `bytes`, `bytearray`, `None`, user-defined classes
 - **Type inference:** local variable types are inferred from the RHS at first binding (`x = 1`, `xs = [1.0, 2.0]`); explicit annotations (`x: int = 1`) are only needed when the RHS is ambiguous (e.g. `xs: list[int] = []`, `parent: Node | None = None`)
 - **Control flow:** `if / elif / else`, `while`, `for … in range`, `for … in list`, `for … in iterator`, `break`, `continue`, `return`
 - **Functions:** `def` with required type annotations, recursion, nested calls, early return, `*args`, `**kwargs`, keyword-only parameters, default arguments, keyword arguments and `*` / `**` unpacking at call sites
@@ -106,7 +106,6 @@ go build -o spython ./cmd/spython
 - Lambdas, nested / closure functions
 - Comprehensions (list / dict / set / generator)
 - Metaclasses, `__new__`, `__slots__`, descriptors
-- Sets
 - Context managers (`with`)
 - `eval`, `exec`, `getattr` / `setattr` / `hasattr`
 - Monkey-patching — classes are closed after definition

@@ -110,6 +110,19 @@ func (t *TupleType) Equals(o Type) bool {
 	return true
 }
 
+type SetType struct {
+	Elem Type
+}
+
+func (t *SetType) String() string { return fmt.Sprintf("set[%s]", t.Elem.String()) }
+func (t *SetType) Equals(o Type) bool {
+	ot, ok := o.(*SetType)
+	if !ok {
+		return false
+	}
+	return t.Elem.Equals(ot.Elem)
+}
+
 type MapType struct {
 	Key   Type
 	Value Type
