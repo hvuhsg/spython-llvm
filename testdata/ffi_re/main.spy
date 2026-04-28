@@ -1,0 +1,90 @@
+from re import Match, search, match, fullmatch, findall, finditer, sub, subn, split, escape, error, IGNORECASE, MULTILINE
+
+
+def print_list(xs: list[str]) -> None:
+    print("[")
+    i: int = 0
+    while i < len(xs):
+        print(xs[i])
+        i = i + 1
+    print("]")
+
+
+# search — leftmost match anywhere in the string.
+m1: Match = search("[0-9]+", "abc123def456")
+print(m1.matched)
+print(m1.group())
+print(m1.start())
+print(m1.end())
+sp: tuple[int, int] = m1.span()
+print(sp[0])
+print(sp[1])
+
+# search miss.
+m2: Match = search("[0-9]+", "no digits here")
+print(m2.matched)
+
+# match — must anchor at position 0.
+m3: Match = match("[a-z]+", "abc123")
+print(m3.matched)
+print(m3.group())
+m4: Match = match("[0-9]+", "abc123")
+print(m4.matched)
+
+# fullmatch — must consume the whole string.
+m5: Match = fullmatch("[a-z]+", "abc")
+print(m5.matched)
+m6: Match = fullmatch("[a-z]+", "abc123")
+print(m6.matched)
+
+# Capture groups.
+m7: Match = search("([0-9]+)-([0-9]+)", "code 123-456 end")
+print(m7.group(0))
+print(m7.group(1))
+print(m7.group(2))
+print_list(m7.groups())
+
+# findall.
+print_list(findall("[0-9]+", "a1b22c333"))
+print_list(findall("x", "abc"))
+
+# finditer.
+total: int = 0
+for fm in finditer("[0-9]+", "1 22 333 4444", 0):
+    total = total + (fm.end() - fm.start())
+print(total)
+
+# sub — literal replacement.
+print(sub("[0-9]+", "N", "a1b22c333"))
+# sub with count.
+print(sub("[0-9]+", "N", "a1b22c333", 2))
+# sub with backreference.
+print(sub("([a-z])([0-9])", "\\2\\1", "a1 b2 c3"))
+
+# subn returns (result, count).
+res: tuple[str, int] = subn("[0-9]+", "N", "a1b22")
+print(res[0])
+print(res[1])
+
+# split.
+print_list(split("[ ,]+", "a, b,,c   d"))
+# split with maxsplit.
+print_list(split(",", "a,b,c,d", 2))
+
+# escape.
+print(escape("1+2=3 (a.b)"))
+
+# IGNORECASE.
+mi: Match = search("hello", "HELLO world", IGNORECASE)
+print(mi.matched)
+print(mi.group())
+
+# MULTILINE: ^ matches at line starts.
+print_list(findall("^[A-Za-z]+", "first\nsecond\nthird", MULTILINE))
+
+# Bad pattern raises re.error.
+try:
+    search("(unclosed", "abc")
+    print("no error")
+except error as e:
+    print("caught error")

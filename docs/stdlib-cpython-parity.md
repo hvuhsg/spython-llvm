@@ -7,11 +7,15 @@ replacement."
 
 ## TL;DR
 
-- **4 of 17** shipped modules match CPython's public API: `keyword`,
+- **4 of 18** shipped modules match CPython's public API: `keyword`,
   `errno` (Darwin-pinned values), `stat`, `colorsys`. `fnmatch` remains the
   one outstanding 1:1 candidate; it needs string slicing or a wider extern
   surface to land. `itertools` ships as a generator-based subset
-  (callables-arg variants intentionally omitted).
+  (callables-arg variants intentionally omitted). `re` shipped this
+  revision as a POSIX-ERE-backed subset — name- and shape-compatible with
+  CPython's `re` for the common cases, but the recognised regex syntax is
+  POSIX ERE, not Python re (no `\d`/`\w`/`\s`, no `(?:...)` /
+  `(?=...)`, no named groups).
 - Several previously-partial modules grew significantly: `math` now ships
   35 functions and `inf`/`nan` constants (including varargs `gcd`/`lcm`/
   `hypot`); `hashlib` adds `sha224`/`sha384`/`sha512`; `time` adds the four
@@ -57,6 +61,7 @@ replacement."
 | `stat` | `S_IFMT` / `S_IMODE` functions, file-type constants, file-type predicates (`S_ISDIR`, `S_ISREG`, …), permission-bit constants, `filemode(mode)` | None — output matches CPython byte-for-byte across all common modes. |
 | `colorsys` | `rgb_to_yiq` / `yiq_to_rgb` / `rgb_to_hls` / `hls_to_rgb` / `rgb_to_hsv` / `hsv_to_rgb` | None — coefficients match CPython exactly; hue normalization works around spython's C-style float `%`. |
 | `itertools` | `count(start, step)`, `repeat(value, times)` / `repeat_forever(value)`, `cycle(xs)`, `chain(its)` / `chain_lists(xss)`, `islice(it, stop)` / `islice_range(it, start, stop, step)`, `accumulate(xs)`, `pairwise(xs)`, `compress(data, selectors)`, `batched(xs, n)`, `tee(it)`, `combinations(xs, r)`, `permutations(xs, r)` | All callable-arg variants (`filterfalse`, `dropwhile`, `takewhile`, `starmap`, `groupby`, `accumulate(func=...)`) — closures still missing. `chain(*iterables)` becomes `chain(its)` (varargs of generator params not yet allowed). Polymorphic iterators are int-specialized. `tee` returns two materialized lists rather than two lazy views. `product`, `zip_longest` need heterogeneous tuple typing. |
+| `re` | `search` / `match` / `fullmatch` returning a `Match`, `findall`, `finditer`, `sub` / `subn`, `split`, `escape`, `IGNORECASE` / `MULTILINE` (and aliases `I` / `M`); `error` exception class; `Match.group(i=0)` / `start` / `end` / `span` / `groups()` / `.matched` / `.string`. Backed by libc's POSIX ERE engine (regcomp/regexec) — no extra link flags. Single-slot compile cache amortises repeated `_exec` calls inside findall/finditer/sub. | Engine is POSIX ERE, so the recognised pattern syntax is **not** Python re: no `\d` / `\w` / `\s` / `\b`, no `(?:...)` / `(?=...)` / `(?!...)` / `(?<...)`, no `(?P<name>...)` named groups, no inline `(?i)` flags, no in-pattern backreferences (POSIX BRE has them, ERE doesn't). `re.DOTALL` is accepted but is a noop — POSIX `.` matches `\n` by default and `MULTILINE` (= `REG_NEWLINE`) flips both `^/$` *and* dot-vs-newline in lockstep. `re.compile` / `re.Pattern` are not shipped (a single-slot cache covers the common loop case). `re.search` returns a Match with `.matched=False` instead of `None` (no Optional sugar yet). `findall` always returns the full-match text; CPython returns capture-group tuples when groups exist, but `list[str]` is homogeneous. Callable `repl` for `sub` is blocked on closures. Embedded NUL bytes truncate the search (POSIX regexec is null-terminated). |
 
 ---
 
@@ -198,7 +203,7 @@ today. Use this to decide what to ship next.
 
 | Rank | Need | Status | Gating work |
 |---|---|---|---|
-| 1 | **`re` — regular expressions** | **Not shipped.** No regex engine in the runtime. | Pure additive: bind a C regex (POSIX, PCRE2, or RE2) via extern. Signatures are mostly fixed-positional; defaults landed, so `re.sub(pat, repl, s, count=0, flags=0)` is reachable in shape. Callable-`repl` is blocked on closures, but the str-`repl` form is not. |
+| 1 | **`re` — regular expressions** | **Shipped this revision** (POSIX-ERE backend; see "Already shipped" above). | Remaining gaps vs. CPython are syntactic (POSIX ERE vs. Python re — no `\d`/`\w`/`\s`, no `(?:...)`, no named groups), plus callable-`repl` for `sub` (closures) and `re.compile` / `Pattern` (cache + class state). |
 | 2 | **`json` — JSON encode/decode** | **Not shipped.** | The blocker is **dynamic typing** — CPython returns `dict[str, Any]` from `loads`. A typed-schema variant (`json.loads_into(T, s)`) is reachable today and would cover most real use. The free-form `loads` waits on `Any`. |
 | 3 | **`datetime`** | Blocked. | Needs class methods, ample defaults (now landed), and `timedelta` arithmetic via `__add__` / `__sub__` (operator overloads on user classes — check whether shipped). The data shape itself is fine. Should be reachable in stages. |
 | 4 | **`pathlib.Path`** | Blocked. | Operator overload (`/`), method chaining, and `__fspath__` protocol. The path operations themselves all exist in `ospath`. Largely a rewrap. |
@@ -235,13 +240,12 @@ today. Use this to decide what to ship next.
 
 If the goal is **maximum programmer-impact per unit of work**, the order is:
 
-1. **`re` via extern binding** — unblocks half the Tier-1 use cases on its own. No new compiler feature needed.
-2. **`shutil` thin wrapper** — trivial; high daily value.
-3. **`Counter` / `OrderedDict` / `deque` in `collections`** — straight ports.
-4. **Iterator protocol on `File`** (`for line in f:`) — small compiler change, large ergonomic win.
-5. **Closures** — after the above, this is the single feature that flips the largest remaining set (Tier 2 ranks 9, 10, 11, plus `key=` everywhere) from "blocked" to "easy port."
-6. **`with` statement desugar** — sugar over `try` / `finally`; modest compiler work, big readability gain.
-7. **Decorators** — last of the big four, unlocks `dataclasses` / `lru_cache` / `unittest` markers.
+1. **`shutil` thin wrapper** — trivial; high daily value.
+2. **`Counter` / `OrderedDict` / `deque` in `collections`** — straight ports.
+3. **Iterator protocol on `File`** (`for line in f:`) — small compiler change, large ergonomic win.
+4. **Closures** — after the above, this is the single feature that flips the largest remaining set (Tier 2 ranks 9, 10, 11, plus `key=` everywhere, plus callable-`repl` in `re.sub`) from "blocked" to "easy port."
+5. **`with` statement desugar** — sugar over `try` / `finally`; modest compiler work, big readability gain.
+6. **Decorators** — last of the big four, unlocks `dataclasses` / `lru_cache` / `unittest` markers.
 
 Everything past that (metaclasses, `Any`, `async`) is a much bigger
 language commitment and should follow user demand, not the parity
