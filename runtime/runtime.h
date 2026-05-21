@@ -133,6 +133,8 @@ void spy_list_reverse(char *list);
 void spy_list_clear(char *list);
 void spy_list_extend(char *dst, const char *src);
 void spy_list_sort(char *list, int64_t kind);
+void spy_list_sort_key(char *list, char *closure, int64_t elem_kind,
+                       int64_t key_kind, int64_t reverse);
 
 // Map operations
 char* spy_map_new(int64_t key_size, int64_t val_size, int64_t hash_type);

@@ -1,6 +1,19 @@
 # CPython stdlib parity in spython
 
-> **This revision shipped five new modules and widened several existing
+> **Closures shipped** (lambdas + nested `def`, captured by value, with the
+> `Callable[[Args], Ret]` type) — the first item on the "headline blockers"
+> list below. Concretely landed: the `itertools` callable variants
+> `takewhile` / `dropwhile` / `filterfalse` / `starmap` (plus
+> `accumulate_with`, the func-taking accumulate), and a new `functools`
+> module with `reduce(function, sequence)`. Callable params can also carry
+> lambda defaults (`key: Callable[...] = lambda x: x`), so `key=`-style
+> signatures are expressible on *non-generator* functions — generators still
+> reject default parameters, which is why `accumulate`'s `func=` default
+> specifically can't ship (hence the separate `accumulate_with`). Still
+> blocked even with closures: union-typed callable args like `re.sub`'s
+> `str | Callable` repl, and varargs-capturing `functools.partial`.
+
+> **An earlier revision shipped five new modules and widened several existing
 > ones.** New: `fnmatch` (full 1:1 — the last outstanding candidate),
 > `string` (constants + `capwords`), `textwrap` (`wrap`/`fill`/`shorten`/
 > `dedent`/`indent`), `secrets` (`token_hex`/`token_bytes`/`token_urlsafe`/
@@ -28,8 +41,10 @@ replacement."
 - **4 of 18** shipped modules match CPython's public API: `keyword`,
   `errno` (Darwin-pinned values), `stat`, `colorsys`. `fnmatch` remains the
   one outstanding 1:1 candidate; it needs string slicing or a wider extern
-  surface to land. `itertools` ships as a generator-based subset
-  (callables-arg variants intentionally omitted). `re` shipped this
+  surface to land. `itertools` ships as a generator-based subset; its
+  callable-arg variants (`takewhile`/`dropwhile`/`filterfalse`/`starmap`/
+  `accumulate_with`) now ship since closures landed (`groupby` still
+  omitted). `re` shipped this
   revision as a POSIX-ERE-backed subset — name- and shape-compatible with
   CPython's `re` for the common cases, but the recognised regex syntax is
   POSIX ERE, not Python re (no `\d`/`\w`/`\s`, no `(?:...)` /
@@ -78,8 +93,11 @@ replacement."
 | `errno` | All 106 `errno.h` integer constants on Darwin/BSD, `EWOULDBLOCK` alias, `errorcode` reverse-lookup map | Values are pinned to the Darwin/macOS build host; on Linux the integers differ (notably `EAGAIN=11`, `EINPROGRESS=115`). Names and `errorcode` semantics are identical. CPython annotates `errorcode` as `dict[int, str]`; spython uses `map[int, str]` for the same type. |
 | `stat` | `S_IFMT` / `S_IMODE` functions, file-type constants, file-type predicates (`S_ISDIR`, `S_ISREG`, …), permission-bit constants, `filemode(mode)` | None — output matches CPython byte-for-byte across all common modes. |
 | `colorsys` | `rgb_to_yiq` / `yiq_to_rgb` / `rgb_to_hls` / `hls_to_rgb` / `rgb_to_hsv` / `hsv_to_rgb` | None — coefficients match CPython exactly; hue normalization works around spython's C-style float `%`. |
-| `itertools` | `count(start, step)`, `repeat(value, times)` / `repeat_forever(value)`, `cycle(xs)`, `chain(its)` / `chain_lists(xss)`, `islice(it, stop)` / `islice_range(it, start, stop, step)`, `accumulate(xs)`, `pairwise(xs)`, `compress(data, selectors)`, `batched(xs, n)`, `tee(it)`, `combinations(xs, r)`, `permutations(xs, r)` | All callable-arg variants (`filterfalse`, `dropwhile`, `takewhile`, `starmap`, `groupby`, `accumulate(func=...)`) — closures still missing. `chain(*iterables)` becomes `chain(its)` (varargs of generator params not yet allowed). Polymorphic iterators are int-specialized. `tee` returns two materialized lists rather than two lazy views. `product`, `zip_longest` need heterogeneous tuple typing. |
+| `itertools` | `count(start, step)`, `repeat(value, times)` / `repeat_forever(value)`, `cycle(xs)`, `chain(its)` / `chain_lists(xss)`, `islice(it, stop)` / `islice_range(it, start, stop, step)`, `accumulate(xs)` / `accumulate_with(xs, func)`, `takewhile(pred, xs)`, `dropwhile(pred, xs)`, `filterfalse(pred, xs)`, `starmap(func, pairs)`, `pairwise(xs)`, `compress(data, selectors)`, `batched(xs, n)`, `tee(it)`, `combinations(xs, r)`, `permutations(xs, r)` | The callable-arg variants now ship (closures landed): `takewhile` / `dropwhile` / `filterfalse` / `starmap`, plus `accumulate_with` for the func-taking accumulate. Still missing: `groupby` (yields `(key, group)` — heterogeneous), and `accumulate`'s own `func=` default (generators can't take default params, so it's split out as `accumulate_with`). `chain(*iterables)` becomes `chain(its)` (varargs of generator params not yet allowed). Polymorphic iterators are int-specialized. `tee` returns two materialized lists rather than two lazy views. `product`, `zip_longest` need heterogeneous tuple typing. |
 | `re` | `search` / `match` / `fullmatch` returning a `Match`, `findall`, `finditer`, `sub` / `subn`, `split`, `escape`, `IGNORECASE` / `MULTILINE` (and aliases `I` / `M`); `error` exception class; `Match.group(i=0)` / `start` / `end` / `span` / `groups()` / `.matched` / `.string`. Backed by libc's POSIX ERE engine (regcomp/regexec) — no extra link flags. Single-slot compile cache amortises repeated `_exec` calls inside findall/finditer/sub. | Engine is POSIX ERE, so the recognised pattern syntax is **not** Python re: no `\d` / `\w` / `\s` / `\b`, no `(?:...)` / `(?=...)` / `(?!...)` / `(?<...)`, no `(?P<name>...)` named groups, no inline `(?i)` flags, no in-pattern backreferences (POSIX BRE has them, ERE doesn't). `re.DOTALL` is accepted but is a noop — POSIX `.` matches `\n` by default and `MULTILINE` (= `REG_NEWLINE`) flips both `^/$` *and* dot-vs-newline in lockstep. `re.compile` / `re.Pattern` are not shipped (a single-slot cache covers the common loop case). `re.search` returns a Match with `.matched=False` instead of `None` (no Optional sugar yet). `findall` always returns the full-match text; CPython returns capture-group tuples when groups exist, but `list[str]` is homogeneous. Callable `repl` for `sub` is blocked on closures. Embedded NUL bytes truncate the search (POSIX regexec is null-terminated). |
+| `heapq` | `heappush` / `heappop` / `heapify` / `heapreplace` / `heappushpop`, `nlargest(n, it, key=lambda x: x)` / `nsmallest(n, it, key=...)`, `merge(lists)`. Heap layout follows CPython's `_siftup`/`_siftdown` so pop order (incl. ties) matches. | Int-specialized (`list[int]` heaps). `merge` is `merge(lists)` not `merge(*iterables, key=, reverse=)` — generators can't take varargs or default params, so its `key=`/`reverse=` are dropped. CPython's `key=None` identity is spelled `key=lambda x: x` (a lambda default on the non-generator `nlargest`/`nsmallest`). `_heapify_max` / `merge`'s lazy N-way nature aside, the heap ops are 1:1. |
+| `bisect` | `bisect_left` / `bisect_right` / `bisect`, `insort_left` / `insort_right` / `insort`, each `(a, x, lo=0, hi=-1, key=lambda v: v)`. As in CPython 3.10+, `key` applies to array elements, not to `x`. | Int-specialized. CPython's `hi=None` (→ len(a)) is modelled with the sentinel `hi=-1`. Otherwise signature- and behavior-compatible, including the `key=` argument. |
+| `list.sort(key=, reverse=)` | The list method (not a module): `xs.sort(key=lambda e: ...)` and `xs.sort(reverse=True)`, including both together, with a stable sort. Lowered to a closure-aware runtime sort (`spy_list_sort_key`) that computes keys by invoking the closure, then stably sorts an index permutation. | Element type must be `int`/`float`/`str`; `key` must be a closure (wrap a named function in a lambda) returning `int`/`float`/`str`. The captured free vars in the key must be function locals (capturing a module-level global in a lambda is a standing closure-codegen limitation). The free `sorted(iterable, key=)` builtin is still not provided. |
 
 ---
 
@@ -105,8 +123,6 @@ the table below splits "newly reachable (additive work only)" from
 |---|---|
 | `cmath` | Returns native `complex` — we have no complex type. (`isclose` / `log(z[, base])` defaults are no longer a blocker.) |
 | `string` | `Template.substitute(**kwargs)` values must all share one type — CPython accepts arbitrary objects. `Formatter` would still need first-class callables for custom converters. Constants + `capwords` are fine. |
-| `heapq` | `merge(*iterables, key=None, reverse=False)` — defaults landed, but `key=` is a **callable kwarg** and `merge` is a **generator**; `nlargest` / `nsmallest(n, it, key=None)` still need a callable. |
-| `bisect` | `bisect_left(a, x, lo=0, hi=None, *, key=None)` — defaults landed; `key=` is a **callable kwarg**. |
 | `glob` | `glob(pat, *, recursive=False, root_dir=None, dir_fd=None, include_hidden=False)` defaults + the `iglob` generator are no longer blockers, but the implementation still needs `fnmatch`-style pattern matching (which itself isn't shipped — see below). |
 | `mimetypes` | Module-level functions are fine; `MimeTypes` class needs `read` / `readfp` taking file-like objects. |
 | `ipaddress` | `ip_address(addr)` accepts `int \| str \| bytes` (union types); constructors take many kwargs. |
@@ -163,10 +179,16 @@ Each is blocked by a specific feature spython intentionally omits.
 
 How many modules each missing feature would unlock if added:
 
-1. **Closures / function values as data** — unlocks `key=` everywhere
-   (`sorted`, `heapq`, `min` / `max`), `functools.partial`, `defaultdict`,
-   `re.sub` callable replacements, threading / server callbacks, signal
-   handlers carrying state.
+1. **Closures / function values as data** — **shipped.** Lambdas + nested
+   `def` with by-value capture and the `Callable[[Args], Ret]` type, plus
+   lambda defaults on non-generator params. Already cashed in:
+   `itertools.takewhile` / `dropwhile` / `filterfalse` / `starmap` /
+   `accumulate_with`, `functools.reduce`, `list.sort(key=, reverse=)`
+   (codegen + runtime), and new `heapq` / `bisect` modules (with `key=`).
+   Still to harvest: `defaultdict` (callable factory + class state),
+   threading / signal callbacks, and a free `sorted(it, key=)` builtin. Not
+   unlocked by closures alone: `re.sub`'s callable repl (union type
+   `str | Callable`) and `functools.partial` (varargs capture).
 2. **Decorators** — unlocks `dataclasses`, `functools.cache`, `@property`,
    `unittest` skip markers, much of `logging` configuration ergonomics.
 3. **`with` / context managers** — ergonomic, not API-blocking; underlying
@@ -188,11 +210,16 @@ signature whose only blocker was defaults is now reachable in shape
 default-only signatures inside already-shipped modules like
 `os.getenv(k, default)`, `os.path.relpath(p, start=...)`,
 `math.isclose`, `math.prod`, `binascii.hexlify(data, sep, …)`, etc.).
-Callable-arg variants (`filterfalse`, `dropwhile`, `takewhile`,
-`starmap`, `groupby`, `accumulate(func=...)`) are still blocked on
-closures; the iterator surface of `csv` / `io` / `os` / `xml` / `email`
-/ `re.finditer` is also unblocked. Closures are now the largest
-remaining lever.
+**Closures shipped this revision** (lambdas + nested `def`, by-value
+capture, `Callable[[Args], Ret]` type), so the callable-arg `itertools`
+variants (`takewhile`, `dropwhile`, `filterfalse`, `starmap`,
+`accumulate_with`) and `functools.reduce` now ship; the iterator surface
+of `csv` / `io` / `os` / `xml` / `email` / `re.finditer` is also
+unblocked. What closures do *not* by themselves unlock: union-typed
+callable args (`re.sub`'s `str | Callable` repl), varargs-capturing
+`functools.partial`, default `func=`/`key=` on *generators* (generators
+reject default params — `accumulate(func=...)` is split out as
+`accumulate_with`), and decorators (`functools.cache` / `lru_cache`).
 
 ---
 
@@ -234,8 +261,8 @@ today. Use this to decide what to ship next.
 
 | Rank | Need | Status | Gating work |
 |---|---|---|---|
-| 9 | **`functools.partial` / `lru_cache` / `reduce`** | Blocked. | `partial` and `reduce` need first-class callables; `lru_cache` needs decorators. None reachable without closures. |
-| 10 | **`itertools` callable variants** (`filterfalse`, `dropwhile`, `takewhile`, `starmap`, `groupby`) | Blocked on closures. | Generator infra is in place; only the callable-arg surface is missing. |
+| 9 | **`functools.partial` / `lru_cache` / `reduce`** | **`reduce` shipped** (closures landed); `partial` / `lru_cache` still blocked. | `reduce(function, sequence)` ships in its two-arg form. `partial` needs varargs capture (heterogeneous); `lru_cache` needs decorators. The 3-arg `reduce(f, it, initializer)` needs a non-int sentinel for the optional initializer. |
+| 10 | **`itertools` callable variants** (`filterfalse`, `dropwhile`, `takewhile`, `starmap`, `groupby`) | **Mostly shipped** (closures landed). | `takewhile` / `dropwhile` / `filterfalse` / `starmap` / `accumulate_with` all ship. Still missing: `groupby` (heterogeneous `(key, group)` output). |
 | 11 | **`csv`** | Blocked. | `csv.reader` is a generator over rows (reachable now); `csv.DictReader` needs `Any`-typed values. The reader form is a clean shipping target. |
 | 12 | **`subprocess.run` / `Popen`** | Blocked. | Heterogeneous kwargs (`stdin=...`, `capture_output=True`, `text=True`), context manager use, and the `bytes` type. Defaults landed; bytes + class state are the remainder. |
 | 13 | **`shutil.copy*` / `rmtree` / `which`** | Not shipped. | Pure additive — the underlying `os` / `ospath` calls all exist. Mostly a thin wrapper module. |
@@ -261,7 +288,16 @@ If the goal is **maximum programmer-impact per unit of work**, the order is:
 1. **`shutil` thin wrapper** — trivial; high daily value.
 2. **`Counter` / `OrderedDict` / `deque` in `collections`** — straight ports.
 3. **Iterator protocol on `File`** (`for line in f:`) — small compiler change, large ergonomic win.
-4. **Closures** — after the above, this is the single feature that flips the largest remaining set (Tier 2 ranks 9, 10, 11, plus `key=` everywhere, plus callable-`repl` in `re.sub`) from "blocked" to "easy port."
+4. **Closures** — **shipped.** Already cashed in for the `itertools`
+   callable variants, `functools.reduce`, `list.sort(key=, reverse=)`, and
+   the new `heapq` / `bisect` modules. Remaining harvest: `defaultdict`
+   (callable factory) and a free `sorted(it, key=)` builtin. Two related
+   codegen items surfaced while landing this: (a) `for x in <list>`
+   miscompiles *inside a generator* ("Instruction does not dominate all
+   uses" — the indexed `while` walk is the workaround the stdlib already
+   uses); (b) generators reject default parameters, so generator
+   `func=`/`key=` defaults aren't expressible. Both are worth fixing to
+   reach fuller parity.
 5. **`with` statement desugar** — sugar over `try` / `finally`; modest compiler work, big readability gain.
 6. **Decorators** — last of the big four, unlocks `dataclasses` / `lru_cache` / `unittest` markers.
 

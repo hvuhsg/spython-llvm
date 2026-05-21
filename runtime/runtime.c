@@ -804,6 +804,99 @@ void spy_list_sort(char *list_ptr, int64_t kind) {
     else qsort(l->data, l->len, l->elem_size, spy_cmp_i64);
 }
 
+// ---- sort(key=..., reverse=...) ----
+// The comparator sorts an index permutation by comparing precomputed keys.
+// State is global because the C standard qsort comparator carries no context;
+// safe here because key computation (which is what calls user closures)
+// completes before qsort runs, and the comparator itself calls no closures.
+static int64_t *g_sk_ki;   // int64 keys
+static double  *g_sk_kf;   // double keys
+static char   **g_sk_ks;   // str-pointer keys (length-prefixed)
+static int64_t  g_sk_kind; // 0 int, 1 float, 2 str
+static int      g_sk_reverse;
+static int spy_sort_idx_cmp(const void *pa, const void *pb) {
+    int64_t ia = *(const int64_t*)pa, ib = *(const int64_t*)pb;
+    int r = 0;
+    if (g_sk_kind == 1) {
+        double a = g_sk_kf[ia], b = g_sk_kf[ib];
+        r = (a > b) - (a < b);
+    } else if (g_sk_kind == 2) {
+        int64_t c = spy_str_compare(g_sk_ks[ia], g_sk_ks[ib]);
+        r = c < 0 ? -1 : (c > 0 ? 1 : 0);
+    } else {
+        int64_t a = g_sk_ki[ia], b = g_sk_ki[ib];
+        r = (a > b) - (a < b);
+    }
+    if (g_sk_reverse) r = -r;
+    // Stable: equal keys keep original (ascending-index) order regardless of
+    // reverse, matching CPython's stable sort.
+    if (r == 0) return (ia > ib) - (ia < ib);
+    return r;
+}
+
+// spy_list_sort_key: sort `list` in place using a key. When `closure` is
+// non-null it is a spython callable value ([fnptr][captures...]); the key for
+// each element is closure(element). When null, the element itself is the key.
+// elem_kind/key_kind: 0 = int64, 1 = double, 2 = str pointer. reverse != 0
+// sorts descending.
+void spy_list_sort_key(char *list_ptr, char *closure, int64_t elem_kind,
+                       int64_t key_kind, int64_t reverse) {
+    SpyList *l = (SpyList*)list_ptr;
+    int64_t n = l->len;
+    if (n < 2) return;
+    int64_t es = l->elem_size;
+
+    int64_t *ki = NULL; double *kf = NULL; char **ks = NULL;
+    if (key_kind == 1) kf = (double*)malloc((size_t)n * sizeof(double));
+    else if (key_kind == 2) ks = (char**)malloc((size_t)n * sizeof(char*));
+    else ki = (int64_t*)malloc((size_t)n * sizeof(int64_t));
+
+    void *fnp = closure ? *(void**)closure : NULL;
+
+    for (int64_t i = 0; i < n; i++) {
+        char *slot = l->data + i * es;
+        if (fnp == NULL) {
+            if (key_kind == 1) kf[i] = *(double*)slot;
+            else if (key_kind == 2) ks[i] = *(char**)slot;
+            else ki[i] = *(int64_t*)slot;
+            continue;
+        }
+        if (elem_kind == 1) {
+            double e = *(double*)slot;
+            if (key_kind == 0) ki[i] = ((int64_t(*)(char*,double))fnp)(closure, e);
+            else if (key_kind == 1) kf[i] = ((double(*)(char*,double))fnp)(closure, e);
+            else ks[i] = ((char*(*)(char*,double))fnp)(closure, e);
+        } else if (elem_kind == 2) {
+            char *e = *(char**)slot;
+            if (key_kind == 0) ki[i] = ((int64_t(*)(char*,char*))fnp)(closure, e);
+            else if (key_kind == 1) kf[i] = ((double(*)(char*,char*))fnp)(closure, e);
+            else ks[i] = ((char*(*)(char*,char*))fnp)(closure, e);
+        } else {
+            int64_t e = *(int64_t*)slot;
+            if (key_kind == 0) ki[i] = ((int64_t(*)(char*,int64_t))fnp)(closure, e);
+            else if (key_kind == 1) kf[i] = ((double(*)(char*,int64_t))fnp)(closure, e);
+            else ks[i] = ((char*(*)(char*,int64_t))fnp)(closure, e);
+        }
+    }
+
+    int64_t *idx = (int64_t*)malloc((size_t)n * sizeof(int64_t));
+    for (int64_t i = 0; i < n; i++) idx[i] = i;
+    g_sk_ki = ki; g_sk_kf = kf; g_sk_ks = ks;
+    g_sk_kind = key_kind; g_sk_reverse = reverse != 0;
+    qsort(idx, (size_t)n, sizeof(int64_t), spy_sort_idx_cmp);
+
+    char *tmp = (char*)malloc((size_t)n * es);
+    for (int64_t i = 0; i < n; i++)
+        memcpy(tmp + i * es, l->data + idx[i] * es, es);
+    memcpy(l->data, tmp, (size_t)n * es);
+
+    free(tmp);
+    free(idx);
+    free(ki);
+    free(kf);
+    free(ks);
+}
+
 // ==================== Maps ====================
 // Simple open-addressing hash map
 

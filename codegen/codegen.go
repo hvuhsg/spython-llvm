@@ -548,6 +548,7 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare void @spy_list_clear(i8*)")
 	g.emitLine("declare void @spy_list_extend(i8*, i8*)")
 	g.emitLine("declare void @spy_list_sort(i8*, i64)")
+	g.emitLine("declare void @spy_list_sort_key(i8*, i8*, i64, i64, i64)")
 	g.emitLine("declare i8* @spy_str_slice(i8*, i64, i64, i64, i64)")
 	g.emitLine("declare i8* @spy_bytes_slice(i8*, i64, i64, i64, i64)")
 	g.emitLine("declare i8* @spy_list_slice(i8*, i64, i64, i64, i64)")
@@ -1095,6 +1096,14 @@ func (g *Generator) emitExprStmt(s *parser.ExprStmt) error {
 			if _, isSuper := attr.Object.(*parser.SuperExpr); !isSuper {
 				if _, isInst := attr.Object.GetResolvedType().(*types.InstanceType); !isInst {
 					if _, isMod := attr.Object.GetResolvedType().(*types.ModuleType); !isMod {
+						// list.sort(key=..., reverse=...) routes through the
+						// closure-aware sort; plain sort() falls through.
+						if attr.Attr == "sort" && len(call.Kwargs) > 0 {
+							if lt, isList := attr.Object.GetResolvedType().(*types.ListType); isList {
+								_, err := g.emitListSortKey(lt, attr, call)
+								return err
+							}
+						}
 						_, err := g.emitMethodCall(attr, call.Args)
 						return err
 					}
@@ -1286,6 +1295,57 @@ func (g *Generator) elemArgToPtr(arg parser.Expr, elemType types.Type) (string, 
 	cast := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", cast, elemLLVM, a))
 	return cast, nil
+}
+
+// sortKindOf maps a sortable element/key type to the runtime comparison kind:
+// 0 = int64, 1 = double, 2 = str pointer.
+func sortKindOf(t types.Type) string {
+	switch t.(type) {
+	case *types.FloatType:
+		return "1"
+	case *types.StrType:
+		return "2"
+	}
+	return "0"
+}
+
+// emitListSortKey lowers list.sort(key=..., reverse=...) into a call to the
+// closure-aware runtime sort. `key` (when present) is a closure value passed
+// as i8*; a null pointer means "sort by the element itself". The runtime
+// computes keys by invoking the closure, then performs a stable sort.
+func (g *Generator) emitListSortKey(lt *types.ListType, attr *parser.AttrExpr, e *parser.CallExpr) (string, error) {
+	objVal, err := g.emitExpr(attr.Object)
+	if err != nil {
+		return "", err
+	}
+	elemKind := sortKindOf(lt.Elem)
+	keyVal := "null"
+	keyKind := elemKind
+	reverseVal := "0"
+	for _, kw := range e.Kwargs {
+		switch kw.Name {
+		case "key":
+			kv, err := g.emitExpr(kw.Value)
+			if err != nil {
+				return "", err
+			}
+			keyVal = kv
+			if ft, ok := kw.Value.GetResolvedType().(*types.FuncType); ok {
+				keyKind = sortKindOf(ft.Return)
+			}
+		case "reverse":
+			rv, err := g.emitExpr(kw.Value)
+			if err != nil {
+				return "", err
+			}
+			z := g.newTmp()
+			g.emitLine(fmt.Sprintf("  %s = zext i1 %s to i64", z, rv))
+			reverseVal = z
+		}
+	}
+	g.emitLine(fmt.Sprintf("  call void @spy_list_sort_key(i8* %s, i8* %s, i64 %s, i64 %s, i64 %s)",
+		objVal, keyVal, elemKind, keyKind, reverseVal))
+	return "void", nil
 }
 
 // emitListMethod lowers list.<method>(args). objVal is the receiver's i8*.
@@ -2789,6 +2849,13 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 				return g.emitUserCall(ft.ExternSymbol, e)
 			}
 			return g.emitUserCall(fmt.Sprintf("spy_%s_%s", modT.ID, attr.Attr), e)
+		}
+		// list.sort(key=..., reverse=...): handled specially because it routes
+		// through a closure-aware runtime sort. Plain sort() falls through.
+		if attr.Attr == "sort" && len(e.Kwargs) > 0 {
+			if lt, isList := attr.Object.GetResolvedType().(*types.ListType); isList {
+				return g.emitListSortKey(lt, attr, e)
+			}
 		}
 		// Otherwise it's a built-in container method (list.append, str.upper,
 		// …). emitMethodCall returns the result value ("void" for mutators).

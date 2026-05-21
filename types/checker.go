@@ -1688,6 +1688,12 @@ func (c *Checker) checkLambdaExpr(e *parser.LambdaExpr) (Type, error) {
 	if berr != nil {
 		return nil, berr
 	}
+	// A nil hint.Return means "infer the return type from the body" — used by
+	// callers (e.g. list.sort(key=...)) that accept a callable whose return
+	// type is polymorphic. Otherwise the body must match the declared return.
+	if hint.Return == nil {
+		return &FuncType{Params: hint.Params, Return: bodyType, Closure: true}, nil
+	}
 	if _, isNone := hint.Return.(*NoneType); !isNone {
 		if !IsAssignable(bodyType, hint.Return) {
 			return nil, fmt.Errorf("%d:%d: lambda body has type %s, expected %s", e.Pos.Line, e.Pos.Col, bodyType, hint.Return)
@@ -2071,6 +2077,20 @@ func (c *Checker) checkCallExpr(e *parser.CallExpr) (Type, error) {
 		}
 	}
 
+	// list.sort(key=..., reverse=...): the key/reverse keyword arguments need
+	// special handling — `key` is a callable whose return type is inferred
+	// (polymorphic), which the generic FuncType machinery can't express. Plain
+	// `xs.sort()` with no keywords still goes through the normal method path.
+	if attr, ok := e.Func.(*parser.AttrExpr); ok && attr.Attr == "sort" && len(e.Kwargs) > 0 {
+		objType, err := c.checkExpr(attr.Object)
+		if err != nil {
+			return nil, err
+		}
+		if lt, ok := objType.(*ListType); ok {
+			return c.checkListSortKey(lt, e)
+		}
+	}
+
 	// User-defined function call (or constructor, or method)
 	funcExpr, err := c.checkExpr(e.Func)
 	if err != nil {
@@ -2100,6 +2120,70 @@ func (c *Checker) checkCallExpr(e *parser.CallExpr) (Type, error) {
 	}
 
 	return funcType.Return, nil
+}
+
+// isSortableElem reports whether a value of type t can be sorted directly or
+// used as a list.sort() key (the runtime comparator handles int/float/str).
+func isSortableElem(t Type) bool {
+	switch t.(type) {
+	case *IntType, *FloatType, *StrType:
+		return true
+	}
+	return false
+}
+
+// checkListSortKey validates `list.sort(key=..., reverse=...)`. The element
+// type must be int/float/str; `key` (if given) must be a closure taking the
+// element type and returning int/float/str; `reverse` must be bool.
+func (c *Checker) checkListSortKey(lt *ListType, e *parser.CallExpr) (Type, error) {
+	pos := e.Pos
+	if len(e.Args) > 0 {
+		return nil, fmt.Errorf("%d:%d: list.sort() takes no positional arguments", pos.Line, pos.Col)
+	}
+	if !isSortableElem(lt.Elem) {
+		return nil, fmt.Errorf("%d:%d: list.sort(key=...) supports list[int], list[float], and list[str], not %s", pos.Line, pos.Col, lt)
+	}
+	seen := map[string]bool{}
+	for _, kw := range e.Kwargs {
+		if kw.IsDStar {
+			return nil, fmt.Errorf("%d:%d: list.sort() does not accept **kwargs unpacking", pos.Line, pos.Col)
+		}
+		if seen[kw.Name] {
+			return nil, fmt.Errorf("%d:%d: list.sort() got duplicate keyword argument '%s'", pos.Line, pos.Col, kw.Name)
+		}
+		seen[kw.Name] = true
+		switch kw.Name {
+		case "key":
+			prev := c.typeHint
+			c.typeHint = &FuncType{Params: []Type{lt.Elem}, Return: nil}
+			kt, err := c.checkExpr(kw.Value)
+			c.typeHint = prev
+			if err != nil {
+				return nil, err
+			}
+			ft, ok := kt.(*FuncType)
+			if !ok {
+				return nil, fmt.Errorf("%d:%d: list.sort() key must be callable, got %s", pos.Line, pos.Col, kt)
+			}
+			if !ft.Closure {
+				return nil, fmt.Errorf("%d:%d: list.sort() key must be a lambda or closure value (wrap a named function in a lambda)", pos.Line, pos.Col)
+			}
+			if !isSortableElem(ft.Return) {
+				return nil, fmt.Errorf("%d:%d: list.sort() key must return int, float, or str, not %s", pos.Line, pos.Col, ft.Return)
+			}
+		case "reverse":
+			rt, err := c.checkExpr(kw.Value)
+			if err != nil {
+				return nil, err
+			}
+			if _, ok := rt.(*BoolType); !ok {
+				return nil, fmt.Errorf("%d:%d: list.sort() reverse must be bool, got %s", pos.Line, pos.Col, rt)
+			}
+		default:
+			return nil, fmt.Errorf("%d:%d: list.sort() got an unexpected keyword argument '%s'", pos.Line, pos.Col, kw.Name)
+		}
+	}
+	return &NoneType{}, nil
 }
 
 // paramName returns the name of param i, or a synthetic placeholder when

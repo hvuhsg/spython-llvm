@@ -1,0 +1,66 @@
+# stdlib/bisect.spy — binary search / sorted insertion, name-compatible
+# with CPython's `bisect`. Closures + lambda defaults let the `key=`
+# argument ship: CPython's `key=None` identity is modelled as
+# `key=lambda v: v`. As in CPython 3.10+, the key function is applied to
+# the array elements but NOT to the search value `x` (which already lives
+# in key-space); `insort` applies it to `x` for the search step only.
+#
+# Constraints relative to CPython 3.13:
+#   * Int-specialized: arrays are `list[int]` and `x` is an `int` (the
+#     comparison value, i.e. key-space).
+#   * CPython's `hi=None` (meaning len(a)) is modelled with the sentinel
+#     `hi=-1`, since spython has no None-typed int. Pass an explicit
+#     non-negative `hi` to bound the search; omit it for the whole array.
+
+# bisect_left(a, x, lo, hi, key) — leftmost index i in a[lo:hi] such that
+# all key(a[:i]) < x and all key(a[i:]) >= x. Insertion before equal keys.
+def bisect_left(a: list[int], x: int, lo: int = 0, hi: int = -1, key: Callable[[int], int] = lambda v: v) -> int:
+    if lo < 0:
+        raise ValueError("lo must be non-negative")
+    top: int = hi
+    if top < 0:
+        top = len(a)
+    low: int = lo
+    while low < top:
+        mid: int = (low + top) // 2
+        if key(a[mid]) < x:
+            low = mid + 1
+        else:
+            top = mid
+    return low
+
+# bisect_right(a, x, lo, hi, key) — rightmost insertion point: index i such
+# that all key(a[:i]) <= x and all key(a[i:]) > x. Insertion after equals.
+def bisect_right(a: list[int], x: int, lo: int = 0, hi: int = -1, key: Callable[[int], int] = lambda v: v) -> int:
+    if lo < 0:
+        raise ValueError("lo must be non-negative")
+    top: int = hi
+    if top < 0:
+        top = len(a)
+    low: int = lo
+    while low < top:
+        mid: int = (low + top) // 2
+        if x < key(a[mid]):
+            top = mid
+        else:
+            low = mid + 1
+    return low
+
+# bisect(a, x, lo, hi, key) — alias for bisect_right, matching CPython.
+def bisect(a: list[int], x: int, lo: int = 0, hi: int = -1, key: Callable[[int], int] = lambda v: v) -> int:
+    return bisect_right(a, x, lo, hi, key)
+
+# insort_left(a, x, lo, hi, key) — insert x into a, keeping it sorted, before
+# any equal entries. The key is applied to x for the search, not the insert.
+def insort_left(a: list[int], x: int, lo: int = 0, hi: int = -1, key: Callable[[int], int] = lambda v: v) -> None:
+    pos: int = bisect_left(a, key(x), lo, hi, key)
+    a.insert(pos, x)
+
+# insort_right(a, x, lo, hi, key) — insert x after any equal entries.
+def insort_right(a: list[int], x: int, lo: int = 0, hi: int = -1, key: Callable[[int], int] = lambda v: v) -> None:
+    pos: int = bisect_right(a, key(x), lo, hi, key)
+    a.insert(pos, x)
+
+# insort(a, x, lo, hi, key) — alias for insort_right, matching CPython.
+def insort(a: list[int], x: int, lo: int = 0, hi: int = -1, key: Callable[[int], int] = lambda v: v) -> None:
+    insort_right(a, x, lo, hi, key)

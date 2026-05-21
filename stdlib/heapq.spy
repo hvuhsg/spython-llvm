@@ -1,0 +1,203 @@
+# stdlib/heapq.spy — binary min-heap on a list, name-compatible with
+# CPython's `heapq`. Closures (lambdas + nested defs) make `nlargest` /
+# `nsmallest` ship with their `key=` argument, expressed via a lambda
+# default (`key=lambda x: x`, CPython's `key=None` identity).
+#
+# Constraints relative to CPython 3.13:
+#   * Int-specialized like the rest of the numeric stdlib: the heap is a
+#     `list[int]`. Float/str variants would be straight copies once a `.spy`
+#     generics story lands.
+#   * `merge(*iterables, key=None, reverse=False)` becomes `merge(lists)`:
+#     varargs of list params aren't allowed, and generators can't take
+#     default parameters, so `key=` / `reverse=` are omitted on it.
+#   * The `_siftup`/`_siftdown` helpers mirror CPython's exact algorithm so
+#     heap layout (and thus pop order on ties) matches byte-for-byte.
+
+# _siftdown(heap, startpos, pos) — restore the heap invariant after placing a
+# new item at `pos`, bubbling it up toward `startpos`. Matches CPython.
+def _siftdown(heap: list[int], startpos: int, pos: int) -> None:
+    newitem: int = heap[pos]
+    p: int = pos
+    while p > startpos:
+        parentpos: int = (p - 1) // 2
+        parent: int = heap[parentpos]
+        if newitem < parent:
+            heap[p] = parent
+            p = parentpos
+        else:
+            break
+    heap[p] = newitem
+
+# _siftup(heap, pos) — CPython's "sift the smaller child up, then sift the
+# moved item back down" strategy (faster than the naive comparison sift).
+def _siftup(heap: list[int], pos: int) -> None:
+    endpos: int = len(heap)
+    startpos: int = pos
+    newitem: int = heap[pos]
+    childpos: int = 2 * pos + 1
+    p: int = pos
+    while childpos < endpos:
+        rightpos: int = childpos + 1
+        if rightpos < endpos:
+            if not heap[childpos] < heap[rightpos]:
+                childpos = rightpos
+        heap[p] = heap[childpos]
+        p = childpos
+        childpos = 2 * p + 1
+    heap[p] = newitem
+    _siftdown(heap, startpos, p)
+
+# heappush(heap, item) — push item, keeping the heap invariant.
+def heappush(heap: list[int], item: int) -> None:
+    heap.append(item)
+    _siftdown(heap, 0, len(heap) - 1)
+
+# heappop(heap) — pop and return the smallest item. Raises IndexError when
+# the heap is empty, matching CPython.
+def heappop(heap: list[int]) -> int:
+    if len(heap) == 0:
+        raise IndexError("index out of range")
+    lastelt: int = heap.pop()
+    if len(heap) == 0:
+        return lastelt
+    returnitem: int = heap[0]
+    heap[0] = lastelt
+    _siftup(heap, 0)
+    return returnitem
+
+# heapreplace(heap, item) — pop the smallest and push item in one step. More
+# efficient than heappop()+heappush(); does not maintain the popped<pushed
+# relationship CPython's docstring warns about either.
+def heapreplace(heap: list[int], item: int) -> int:
+    if len(heap) == 0:
+        raise IndexError("index out of range")
+    returnitem: int = heap[0]
+    heap[0] = item
+    _siftup(heap, 0)
+    return returnitem
+
+# heappushpop(heap, item) — push item then pop-and-return the smallest. If
+# item is <= the current min, it is returned directly (no heap mutation).
+def heappushpop(heap: list[int], item: int) -> int:
+    if len(heap) > 0:
+        if heap[0] < item:
+            tmp: int = heap[0]
+            heap[0] = item
+            item = tmp
+            _siftup(heap, 0)
+    return item
+
+# heapify(x) — transform list x into a heap in-place, in O(len(x)).
+def heapify(x: list[int]) -> None:
+    n: int = len(x)
+    i: int = n // 2 - 1
+    while i >= 0:
+        _siftup(x, i)
+        i = i - 1
+
+# nlargest(n, iterable, key) — the n largest elements, largest first, ties in
+# encounter order (matching `sorted(it, key=key, reverse=True)[:n]`). The
+# `key=lambda x: x` default reproduces CPython's `key=None` identity.
+def nlargest(n: int, iterable: list[int], key: Callable[[int], int] = lambda x: x) -> list[int]:
+    result: list[int] = []
+    if n <= 0:
+        return result
+    pool: list[int] = []
+    for v in iterable:
+        pool.append(v)
+    taken: list[bool] = []
+    j: int = 0
+    while j < len(pool):
+        taken.append(False)
+        j = j + 1
+    count: int = n
+    if count > len(pool):
+        count = len(pool)
+    c: int = 0
+    while c < count:
+        best: int = -1
+        bestkey: int = 0
+        k: int = 0
+        while k < len(pool):
+            if not taken[k]:
+                kv: int = key(pool[k])
+                if best < 0:
+                    best = k
+                    bestkey = kv
+                else:
+                    if kv > bestkey:
+                        best = k
+                        bestkey = kv
+            k = k + 1
+        taken[best] = True
+        result.append(pool[best])
+        c = c + 1
+    return result
+
+# nsmallest(n, iterable, key) — the n smallest elements, smallest first, ties
+# in encounter order (matching `sorted(it, key=key)[:n]`).
+def nsmallest(n: int, iterable: list[int], key: Callable[[int], int] = lambda x: x) -> list[int]:
+    result: list[int] = []
+    if n <= 0:
+        return result
+    pool: list[int] = []
+    for v in iterable:
+        pool.append(v)
+    taken: list[bool] = []
+    j: int = 0
+    while j < len(pool):
+        taken.append(False)
+        j = j + 1
+    count: int = n
+    if count > len(pool):
+        count = len(pool)
+    c: int = 0
+    while c < count:
+        best: int = -1
+        bestkey: int = 0
+        k: int = 0
+        while k < len(pool):
+            if not taken[k]:
+                kv: int = key(pool[k])
+                if best < 0:
+                    best = k
+                    bestkey = kv
+                else:
+                    if kv < bestkey:
+                        best = k
+                        bestkey = kv
+            k = k + 1
+        taken[best] = True
+        result.append(pool[best])
+        c = c + 1
+    return result
+
+# merge(lists) — merge several already-sorted lists into one sorted stream.
+# CPython spells this `merge(*iterables, key=None, reverse=False)`; varargs
+# of list params aren't allowed and generators can't take defaults, so this
+# ships as `merge(lists)` over ascending int lists.
+def merge(lists: list[list[int]]) -> Iterator[int]:
+    cursors: list[int] = []
+    i: int = 0
+    while i < len(lists):
+        cursors.append(0)
+        i = i + 1
+    while True:
+        best: int = -1
+        bestval: int = 0
+        j: int = 0
+        while j < len(lists):
+            if cursors[j] < len(lists[j]):
+                v: int = lists[j][cursors[j]]
+                if best < 0:
+                    best = j
+                    bestval = v
+                else:
+                    if v < bestval:
+                        best = j
+                        bestval = v
+            j = j + 1
+        if best < 0:
+            return
+        yield bestval
+        cursors[best] = cursors[best] + 1

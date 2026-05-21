@@ -1,0 +1,19 @@
+from itertools import takewhile, dropwhile, filterfalse, starmap, accumulate, accumulate_with
+
+for v in takewhile(lambda n: n < 4, [1, 2, 3, 9, 1]):
+    print(v)
+print(0)
+for v in dropwhile(lambda n: n < 4, [1, 2, 3, 9, 1]):
+    print(v)
+print(0)
+for v in filterfalse(lambda n: n % 2 == 0, [1, 2, 3, 4, 5]):
+    print(v)
+print(0)
+for v in starmap(lambda a, b: a + b, [(1, 2), (3, 4), (5, 6)]):
+    print(v)
+print(0)
+for v in accumulate([1, 2, 3, 4]):
+    print(v)
+print(0)
+for v in accumulate_with([1, 2, 3, 4], lambda a, b: a * b):
+    print(v)

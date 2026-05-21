@@ -2,9 +2,12 @@
 # with CPython's `itertools` where the type system allows.
 #
 # Constraints (all relative to CPython 3.13):
-#   * spython has no first-class functions or closures, so every itertools
-#     function that takes a callable is omitted: filterfalse, dropwhile,
-#     takewhile, starmap, groupby, accumulate(func=...).
+#   * Closures are now supported, so the callable-arg variants are shipped:
+#     takewhile, dropwhile, filterfalse, starmap, and accumulate_with (the
+#     func-taking accumulate; the bare `accumulate(it, func=...)` form can't
+#     default `func` because generators reject default parameters). Still
+#     omitted: groupby (yields (key, group) pairs — heterogeneous) and
+#     callable-`key` on the combinatoric helpers.
 #   * spython has no parametric polymorphism, so iterators that CPython
 #     spells generically over T are int-specialized here. Float/str
 #     variants would be straight copies once a `.spy` generics story
@@ -93,8 +96,10 @@ def islice_range(it: Iterator[int], start: int, stop: int, step: int) -> Iterato
                 next_emit = next_emit + step
         i = i + 1
 
-# accumulate(xs) — running totals. CPython's func= argument is omitted
-# (no first-class functions); always sums.
+# accumulate(xs) — running totals (always sums). CPython's `func=` argument
+# would need a *default* callable, but generators can't take default
+# parameters yet ("v1" limitation), so the func-taking form stays omitted
+# even with closures. accumulate_with(xs, func) below offers it explicitly.
 def accumulate(xs: list[int]) -> Iterator[int]:
     if len(xs) == 0:
         return
@@ -104,6 +109,67 @@ def accumulate(xs: list[int]) -> Iterator[int]:
     while i < len(xs):
         total = total + xs[i]
         yield total
+        i = i + 1
+
+# accumulate_with(xs, func) — accumulate under an explicit binary function.
+# This is the closure-enabled form of CPython's `accumulate(it, func)`; it
+# carries a distinct name because the bare `accumulate` cannot default
+# `func` (no defaults on generators). `accumulate_with(xs, lambda a, b: a * b)`
+# gives running products, etc.
+def accumulate_with(xs: list[int], func: Callable[[int, int], int]) -> Iterator[int]:
+    if len(xs) == 0:
+        return
+    total: int = xs[0]
+    yield total
+    i: int = 1
+    while i < len(xs):
+        total = func(total, xs[i])
+        yield total
+        i = i + 1
+
+# takewhile(predicate, xs) — yield items while predicate holds, then stop.
+# Closures make this a 1:1 port of CPython (int-specialized like the rest of
+# the module). Indexed `while` walk rather than `for x in xs` because the
+# latter currently miscompiles inside generators.
+def takewhile(predicate: Callable[[int], bool], xs: list[int]) -> Iterator[int]:
+    i: int = 0
+    while i < len(xs):
+        if not predicate(xs[i]):
+            return
+        yield xs[i]
+        i = i + 1
+
+# dropwhile(predicate, xs) — skip the leading run for which predicate holds,
+# then yield every remaining item (including the first failing one).
+def dropwhile(predicate: Callable[[int], bool], xs: list[int]) -> Iterator[int]:
+    n: int = len(xs)
+    i: int = 0
+    while i < n:
+        if not predicate(xs[i]):
+            break
+        i = i + 1
+    while i < n:
+        yield xs[i]
+        i = i + 1
+
+# filterfalse(predicate, xs) — yield items for which predicate is false.
+# CPython accepts predicate=None (meaning "use the truthiness of the item");
+# spython has no None-typed callable, so the predicate is required.
+def filterfalse(predicate: Callable[[int], bool], xs: list[int]) -> Iterator[int]:
+    i: int = 0
+    while i < len(xs):
+        if not predicate(xs[i]):
+            yield xs[i]
+        i = i + 1
+
+# starmap(function, pairs) — apply a 2-arg function to each (a, b) tuple.
+# CPython's starmap unpacks arguments of arbitrary arity; spython's tuples
+# are fixed-arity at the type level, so this ships the common 2-arg form.
+def starmap(function: Callable[[int, int], int], pairs: list[tuple[int, int]]) -> Iterator[int]:
+    i: int = 0
+    while i < len(pairs):
+        p: tuple[int, int] = pairs[i]
+        yield function(p[0], p[1])
         i = i + 1
 
 # pairwise(xs) — adjacent pairs. CPython 3.10+; yields tuples.

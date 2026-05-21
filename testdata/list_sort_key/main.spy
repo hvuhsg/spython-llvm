@@ -1,0 +1,53 @@
+# descending via key
+a: list[int] = [3, 1, 4, 1, 5, 9, 2, 6]
+a.sort(key=lambda x: 0 - x)
+print(a[0])
+print(a[7])
+print(0)
+
+# reverse=True (no key)
+b: list[int] = [3, 1, 2]
+b.sort(reverse=True)
+print(b[0])
+print(b[1])
+print(b[2])
+print(0)
+
+# strings by length (key returns int)
+words: list[str] = ["bbb", "a", "cccc", "dd"]
+words.sort(key=lambda s: len(s))
+print(words[0])
+print(words[1])
+print(words[2])
+print(words[3])
+print(0)
+
+# stability: tie on key keeps original order
+s: list[int] = [21, 12, 23, 11, 22]
+s.sort(key=lambda x: x // 10)
+print(s[0])
+print(s[1])
+print(s[2])
+print(s[3])
+print(s[4])
+print(0)
+
+# float list, plain and keyed
+f: list[float] = [3.5, 1.2, 2.8]
+f.sort()
+print(f[0])
+print(f[2])
+print(0)
+
+# capturing closure as key (capture must be a function local)
+def sort_desc_scaled(xs: list[int], m: int) -> int:
+    xs.sort(key=lambda x: 0 - x * m)
+    return xs[0]
+print(sort_desc_scaled([3, 1, 2], 10))
+print(0)
+
+# key + reverse together on strings
+w2: list[str] = ["bb", "a", "ccc"]
+w2.sort(key=lambda s: len(s), reverse=True)
+print(w2[0])
+print(w2[2])

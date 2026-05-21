@@ -1,0 +1,29 @@
+# stdlib/functools.spy — higher-order helpers, name-compatible with
+# CPython's `functools` where the type system allows.
+#
+# Closures (lambdas + nested defs) unlock `reduce`, the headline
+# callable-taking helper. Constraints relative to CPython 3.13:
+#   * `reduce(function, iterable[, initializer])` ships in its canonical
+#     two-argument form: the accumulator is seeded with the first element.
+#     The optional third `initializer` argument needs a sentinel distinct
+#     from any int (spython has no None-typed int), so it is omitted; pass
+#     a leading element if you need it.
+#   * Like the rest of the numeric stdlib, this is int-specialized — the
+#     function folds `list[int]` to `int`.
+#   * `partial`, `cmp_to_key`, `reduce`-with-initializer, and the decorator
+#     helpers (`cache`, `lru_cache`, `wraps`, `total_ordering`) remain out
+#     of reach: they need varargs capture, returned comparison objects, or
+#     decorators.
+
+# reduce(function, sequence) — left-fold `sequence` with the binary
+# `function`, seeding from `sequence[0]`. Raises TypeError on an empty
+# sequence, exactly like CPython's two-argument form.
+def reduce(function: Callable[[int, int], int], sequence: list[int]) -> int:
+    if len(sequence) == 0:
+        raise TypeError("reduce() of empty iterable with no initial value")
+    acc: int = sequence[0]
+    i: int = 1
+    while i < len(sequence):
+        acc = function(acc, sequence[i])
+        i = i + 1
+    return acc

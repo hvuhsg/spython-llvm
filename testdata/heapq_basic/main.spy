@@ -1,0 +1,39 @@
+from heapq import heappush, heappop, heapify, heapreplace, heappushpop, nlargest, nsmallest, merge
+
+h: list[int] = []
+heappush(h, 5)
+heappush(h, 1)
+heappush(h, 8)
+heappush(h, 3)
+print(heappop(h))
+print(heappop(h))
+print(0)
+
+data: list[int] = [9, 4, 7, 1, 5, 2, 8, 3, 6]
+heapify(data)
+while len(data) > 0:
+    print(heappop(data))
+print(0)
+
+print(heapreplace([2, 4, 6], 5))
+print(heappushpop([2, 4, 6], 1))
+print(heappushpop([2, 4, 6], 7))
+print(0)
+
+big: list[int] = [1, 5, 2, 8, 3, 9, 4]
+a: list[int] = nlargest(3, big)
+print(a[0])
+print(a[1])
+print(a[2])
+b: list[int] = nsmallest(3, big)
+print(b[0])
+print(b[1])
+print(b[2])
+c: list[int] = nlargest(3, big, lambda x: 0 - x)
+print(c[0])
+print(c[1])
+print(c[2])
+print(0)
+
+for v in merge([[1, 4, 7], [2, 3, 9], [5, 6]]):
+    print(v)
