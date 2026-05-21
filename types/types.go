@@ -47,6 +47,21 @@ type NoneType struct{}
 func (t *NoneType) String() string    { return "None" }
 func (t *NoneType) Equals(o Type) bool { _, ok := o.(*NoneType); return ok }
 
+// AnyType is a runtime-tagged value box. Any value (int, float, bool, str,
+// bytes, list, dict, None) can be assigned to Any; the conversion boxes the
+// value into a SpyAny tagged union at the LLVM level (see runtime.c). The
+// reverse direction requires explicit unboxing via the any_int / any_str /
+// any_float / any_bool / any_list / any_dict / any_bytes builtins, which
+// raise TypeError when the runtime tag doesn't match the requested type.
+//
+// Any exists primarily so JSON values (whose shape isn't statically known)
+// and other heterogeneous payloads (request/response bodies, dynamic
+// configuration) can be expressed in spython's otherwise-static type system.
+type AnyType struct{}
+
+func (t *AnyType) String() string    { return "Any" }
+func (t *AnyType) Equals(o Type) bool { _, ok := o.(*AnyType); return ok }
+
 // IteratorType is the static type of a generator function's return value.
 // Today only generator functions (def with `yield` body, declared
 // `-> Iterator[T]`) produce these; user-defined iterator classes are not
@@ -166,6 +181,11 @@ type FuncType struct {
 	// Defaults are inlined at each call site that omits the slot (the
 	// expression is re-emitted per call, not shared via a global).
 	ParamDefaults []parser.Expr
+	// Closure marks a first-class callable value (a lambda, nested def, or a
+	// Callable[...] annotation) as opposed to a statically-dispatched named
+	// function symbol. Closure values are represented at runtime as an i8*
+	// to a heap environment whose first slot is the function pointer.
+	Closure bool
 }
 
 func (t *FuncType) String() string {
@@ -289,13 +309,33 @@ func (t *InstanceType) Equals(o Type) bool {
 
 // IsAssignable reports whether a value of type `from` can be assigned to a
 // variable/parameter of type `to`. It is identity for primitives and allows
-// subclass -> superclass widening for instance types.
+// subclass -> superclass widening for instance types. Any boxes any other
+// type, and container types (list/map) propagate Any through their element
+// or value position so list[int] -> list[Any] and map[str,int] -> map[str,Any]
+// both succeed (the boxing happens at the codegen layer when literals are
+// emitted into an Any-shaped target).
 func IsAssignable(from, to Type) bool {
 	// A None literal is assignable to any instance type — lets users start
 	// fields as None and reassign later. (Not currently used; reserved.)
 	if fi, ok := from.(*InstanceType); ok {
 		if ti, ok := to.(*InstanceType); ok {
 			return fi.Class.IsSubclassOf(ti.Class)
+		}
+	}
+	// Anything is assignable to Any (boxing).
+	if _, ok := to.(*AnyType); ok {
+		return true
+	}
+	// Containers propagate assignability through their element/value type
+	// so map[K, V1] -> map[K, V2] when V1 -> V2 (mostly used for V2 = Any).
+	if fl, ok := from.(*ListType); ok {
+		if tl, ok := to.(*ListType); ok {
+			return IsAssignable(fl.Elem, tl.Elem)
+		}
+	}
+	if fm, ok := from.(*MapType); ok {
+		if tm, ok := to.(*MapType); ok {
+			return fm.Key.Equals(tm.Key) && IsAssignable(fm.Value, tm.Value)
 		}
 	}
 	return from.Equals(to)

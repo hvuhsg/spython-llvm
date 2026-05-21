@@ -1,0 +1,115 @@
+# stdlib/textwrap.spy — text wrapping and filling. Pure spython.
+#
+# Implements the module-level helpers wrap / fill / shorten / dedent /
+# indent with their common defaults (replace_whitespace, drop_whitespace
+# and break_long_words all effectively on). The TextWrapper class and the
+# less-common keyword knobs (expand_tabs, break_on_hyphens, max_lines,
+# tabsize, custom predicates) are out of scope.
+
+def _leading_ws(line: str) -> str:
+    i: int = 0
+    while i < len(line):
+        c: str = line[i:i + 1]
+        if c == " " or c == "\t":
+            i = i + 1
+        else:
+            return line[0:i]
+    return line[0:i]
+
+def _is_ws_only(line: str) -> bool:
+    i: int = 0
+    while i < len(line):
+        c: str = line[i:i + 1]
+        if c != " " and c != "\t":
+            return False
+        i = i + 1
+    return True
+
+def _common_prefix(a: str, b: str) -> str:
+    n: int = len(a)
+    if len(b) < n:
+        n = len(b)
+    i: int = 0
+    while i < n and a[i:i + 1] == b[i:i + 1]:
+        i = i + 1
+    return a[0:i]
+
+# wrap(text, width=70) -> list of lines, each at most width chars. Whitespace
+# is collapsed; words longer than width are broken (break_long_words=True).
+def wrap(text: str, width: int = 70) -> list[str]:
+    words: list[str] = text.split("")
+    lines: list[str] = []
+    cur: str = ""
+    for w in words:
+        word: str = w
+        if len(cur) > 0 and len(cur) + 1 + len(word) <= width:
+            cur = cur + " " + word
+        else:
+            if len(cur) > 0:
+                lines.append(cur)
+                cur = ""
+            while len(word) > width:
+                lines.append(word[0:width])
+                word = word[width:len(word)]
+            cur = word
+    if len(cur) > 0:
+        lines.append(cur)
+    return lines
+
+# fill(text, width=70) -> wrap then join with newlines.
+def fill(text: str, width: int = 70) -> str:
+    return "\n".join(wrap(text, width))
+
+# shorten(text, width, placeholder=" [...]") -> collapse whitespace and, if
+# needed, truncate on word boundaries with the placeholder appended.
+def shorten(text: str, width: int, placeholder: str = " [...]") -> str:
+    words: list[str] = text.split("")
+    full: str = " ".join(words)
+    if len(full) <= width:
+        return full
+    res: str = ""
+    for w in words:
+        cand: str = w
+        if len(res) > 0:
+            cand = res + " " + w
+        if len(cand) + len(placeholder) <= width:
+            res = cand
+        else:
+            return res + placeholder
+    return res + placeholder
+
+# dedent(text) -> remove the longest common leading whitespace from all
+# non-whitespace lines; whitespace-only lines are emptied.
+def dedent(text: str) -> str:
+    lines: list[str] = text.split("\n")
+    margin: str = ""
+    have: bool = False
+    for line in lines:
+        if _is_ws_only(line):
+            continue
+        lw: str = _leading_ws(line)
+        if not have:
+            margin = lw
+            have = True
+        else:
+            margin = _common_prefix(margin, lw)
+    out: list[str] = []
+    mlen: int = len(margin)
+    for line in lines:
+        if _is_ws_only(line):
+            out.append("")
+        else:
+            out.append(line[mlen:len(line)])
+    return "\n".join(out)
+
+# indent(text, prefix) -> prepend prefix to every non-whitespace line
+# (textwrap.indent's default predicate).
+def indent(text: str, prefix: str) -> str:
+    lines: list[str] = text.split("\n")
+    out: list[str] = []
+    for line in lines:
+        if _is_ws_only(line):
+            out.append(line)
+        else:
+            out.append(prefix + line)
+    return "\n".join(out)

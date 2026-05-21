@@ -10,3 +10,31 @@ def b64encode(data: bytes) -> str: ...
 
 @extern
 def b64decode(s: str) -> bytes: ...
+
+@extern
+def _b16encode(data: bytes) -> str: ...
+
+@extern
+def _b16decode(s: str) -> bytes: ...
+
+# standard_b64encode / standard_b64decode are the plain RFC 4648 codec —
+# identical to b64encode / b64decode (which take no altchars here).
+def standard_b64encode(data: bytes) -> str:
+    return b64encode(data)
+
+def standard_b64decode(s: str) -> bytes:
+    return b64decode(s)
+
+# URL- and filesystem-safe alphabet: '+' -> '-', '/' -> '_'.
+def urlsafe_b64encode(data: bytes) -> str:
+    return b64encode(data).replace("+", "-").replace("/", "_")
+
+def urlsafe_b64decode(s: str) -> bytes:
+    return b64decode(s.replace("-", "+").replace("_", "/"))
+
+# Base16 (hex). encode is uppercase; decode is case-insensitive.
+def b16encode(data: bytes) -> str:
+    return _b16encode(data)
+
+def b16decode(s: str) -> bytes:
+    return _b16decode(s)

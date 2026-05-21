@@ -217,6 +217,15 @@ func build(file, output string, opts buildOptions) error {
 				break
 			}
 		}
+		// Same for OpenSSL — Apple no longer ships OpenSSL headers, so any
+		// program using stdlib/ssl needs the homebrew install. Try the
+		// versioned `openssl@3` first, then fall back to `openssl`.
+		for _, prefix := range []string{"/opt/homebrew/opt/openssl@3", "/usr/local/opt/openssl@3", "/opt/homebrew/opt/openssl", "/usr/local/opt/openssl"} {
+			if _, err := os.Stat(filepath.Join(prefix, "include", "openssl", "ssl.h")); err == nil {
+				args = append(args, "-I"+filepath.Join(prefix, "include"), "-L"+filepath.Join(prefix, "lib"))
+				break
+			}
+		}
 	}
 	args = append(args, "-lgc")
 	args = append(args, linkFlags...)

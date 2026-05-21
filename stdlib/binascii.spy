@@ -8,3 +8,10 @@ def unhexlify(s: str) -> str: ...
 
 @extern
 def crc32(s: str) -> int: ...
+
+# b2a_hex / a2b_hex are CPython's alternate names for hexlify / unhexlify.
+def b2a_hex(s: str) -> str:
+    return hexlify(s)
+
+def a2b_hex(s: str) -> str:
+    return unhexlify(s)

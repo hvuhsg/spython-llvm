@@ -1,0 +1,52 @@
+# End-to-end test against https://www.google.com/robots.txt — hits the
+# public internet, so it is not part of the integration suite (no
+# main.expected). Run manually:
+#
+#   go run ./cmd/spython run testdata/requests_example/main.spy
+#
+# robots.txt is the smallest stable endpoint we can hit on Google's
+# infrastructure (~5KB plain text). It exercises the full pipeline —
+# DNS resolution, TLS handshake, request framing, header parsing,
+# body recv — without dragging in the ~100KB of the full homepage.
+
+import requests
+from requests import Response
+
+
+def main() -> int:
+    r: Response = requests.get("https://www.google.com/robots.txt", {})
+
+    print("status_code:")
+    print(r.status_code)
+
+    print("ok:")
+    print(r.ok)
+
+    print("content-type:")
+    print(r.headers["content-type"])
+
+    print("body length:")
+    print(len(r.content))
+
+    # Every robots.txt starts with a `User-agent:` directive. Use it
+    # as a cheap sanity-check that the body is the expected resource
+    # and not a TLS error page or empty stream.
+    needle: str = "User-agent:"
+    n: int = len(r.text)
+    m: int = len(needle)
+    found: bool = False
+    i: int = 0
+    while i + m <= n:
+        if r.text[i:i+m] == needle:
+            found = True
+            i = n
+        else:
+            i = i + 1
+    print("contains 'User-agent:':")
+    print(found)
+
+    r.raise_for_status()
+    return 0
+
+
+main()

@@ -1,0 +1,34 @@
+# multiple captures, mixed types
+def scaler(factor: float, label: str) -> Callable[[float], str]:
+    return lambda x: label + str(x * factor)
+f = scaler(2.0, "result=")
+print(f(3.0))
+print(f(10.0))
+
+# no capture
+sq: Callable[[int], int] = lambda n: n * n
+print(sq(7))
+
+# compose two closures
+def compose(g: Callable[[int], int], h: Callable[[int], int]) -> Callable[[int], int]:
+    return lambda x: g(h(x))
+inc: Callable[[int], int] = lambda x: x + 1
+dbl: Callable[[int], int] = lambda x: x * 2
+incdbl = compose(inc, dbl)
+print(incdbl(5))
+
+# closure stored in a list, applied in a loop
+fns: list[Callable[[int], int]] = [lambda x: x + 1, lambda x: x * 10, lambda x: x - 3]
+for fn in fns:
+    print(fn(5))
+
+# higher-order builtin-style: map over a list with a closure
+def mapints(xs: list[int], fn: Callable[[int], int]) -> list[int]:
+    out: list[int] = []
+    for v in xs:
+        out.append(fn(v))
+    return out
+res: list[int] = mapints([1, 2, 3], lambda x: x * x)
+print(res[0])
+print(res[1])
+print(res[2])

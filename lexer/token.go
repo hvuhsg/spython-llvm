@@ -24,6 +24,7 @@ const (
 	TOKEN_FOR
 	TOKEN_IN
 	TOKEN_DEF
+	TOKEN_LAMBDA
 	TOKEN_RETURN
 	TOKEN_AND
 	TOKEN_OR
@@ -110,6 +111,7 @@ var tokenNames = map[TokenType]string{
 	TOKEN_FOR:      "for",
 	TOKEN_IN:       "in",
 	TOKEN_DEF:      "def",
+	TOKEN_LAMBDA:   "lambda",
 	TOKEN_RETURN:   "return",
 	TOKEN_AND:      "and",
 	TOKEN_OR:       "or",
@@ -190,6 +192,7 @@ var keywords = map[string]TokenType{
 	"for":      TOKEN_FOR,
 	"in":       TOKEN_IN,
 	"def":      TOKEN_DEF,
+	"lambda":   TOKEN_LAMBDA,
 	"return":   TOKEN_RETURN,
 	"and":      TOKEN_AND,
 	"or":       TOKEN_OR,

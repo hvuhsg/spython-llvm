@@ -185,6 +185,12 @@ void spy_print_newline(void) {
 // ==================== Strings ====================
 // Layout: [int64_t len][char data...]
 
+// General GC allocation, used for closure environments (and any other
+// codegen-synthesized heap blocks that hold pointers).
+void* spy_gc_alloc(int64_t n) {
+    return GC_MALLOC((size_t)(n > 0 ? n : 1));
+}
+
 char* spy_str_new(const char *data, int64_t len) {
     char *s = GC_MALLOC_ATOMIC(sizeof(int64_t) + len);
     *(int64_t*)s = len;
@@ -233,6 +239,296 @@ int64_t spy_str_compare(const char *a, const char *b) {
     if (len_a < len_b) return -1;
     if (len_a > len_b) return 1;
     return 0;
+}
+
+// ==================== String methods ====================
+// ASCII semantics (spython strings are byte strings). These back the
+// str.<method> surface exposed by the type checker / codegen.
+
+#define SPY_SDATA(s) ((const char*)((s) + sizeof(int64_t)))
+
+static int spy_is_space_ch(unsigned char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+}
+
+char* spy_str_upper(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    char *out = GC_MALLOC_ATOMIC(sizeof(int64_t) + n);
+    *(int64_t*)out = n;
+    char *o = out + sizeof(int64_t);
+    for (int64_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)d[i];
+        o[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+    }
+    return out;
+}
+
+char* spy_str_lower(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    char *out = GC_MALLOC_ATOMIC(sizeof(int64_t) + n);
+    *(int64_t*)out = n;
+    char *o = out + sizeof(int64_t);
+    for (int64_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)d[i];
+        o[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+    }
+    return out;
+}
+
+// capitalize: first char upper, rest lower.
+char* spy_str_capitalize(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    char *out = GC_MALLOC_ATOMIC(sizeof(int64_t) + n);
+    *(int64_t*)out = n;
+    char *o = out + sizeof(int64_t);
+    for (int64_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)d[i];
+        if (i == 0) o[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+        else o[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+    }
+    return out;
+}
+
+char* spy_str_strip(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    int64_t lo = 0, hi = n;
+    while (lo < hi && spy_is_space_ch((unsigned char)d[lo])) lo++;
+    while (hi > lo && spy_is_space_ch((unsigned char)d[hi - 1])) hi--;
+    return spy_str_new(d + lo, hi - lo);
+}
+
+char* spy_str_lstrip(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    int64_t lo = 0;
+    while (lo < n && spy_is_space_ch((unsigned char)d[lo])) lo++;
+    return spy_str_new(d + lo, n - lo);
+}
+
+char* spy_str_rstrip(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    int64_t hi = n;
+    while (hi > 0 && spy_is_space_ch((unsigned char)d[hi - 1])) hi--;
+    return spy_str_new(d, hi);
+}
+
+int spy_str_startswith(const char *s, const char *prefix) {
+    int64_t n = *(int64_t*)s;
+    int64_t pn = *(int64_t*)prefix;
+    if (pn > n) return 0;
+    return memcmp(SPY_SDATA(s), SPY_SDATA(prefix), pn) == 0;
+}
+
+int spy_str_endswith(const char *s, const char *suffix) {
+    int64_t n = *(int64_t*)s;
+    int64_t sn = *(int64_t*)suffix;
+    if (sn > n) return 0;
+    return memcmp(SPY_SDATA(s) + (n - sn), SPY_SDATA(suffix), sn) == 0;
+}
+
+// Lowest index of sub in s, or -1. Empty sub matches at 0.
+int64_t spy_str_find(const char *s, const char *sub) {
+    int64_t n = *(int64_t*)s;
+    int64_t m = *(int64_t*)sub;
+    const char *sd = SPY_SDATA(s);
+    const char *td = SPY_SDATA(sub);
+    if (m == 0) return 0;
+    for (int64_t i = 0; i + m <= n; i++) {
+        if (memcmp(sd + i, td, m) == 0) return i;
+    }
+    return -1;
+}
+
+int64_t spy_str_rfind(const char *s, const char *sub) {
+    int64_t n = *(int64_t*)s;
+    int64_t m = *(int64_t*)sub;
+    const char *sd = SPY_SDATA(s);
+    const char *td = SPY_SDATA(sub);
+    if (m == 0) return n;
+    for (int64_t i = n - m; i >= 0; i--) {
+        if (memcmp(sd + i, td, m) == 0) return i;
+    }
+    return -1;
+}
+
+// Count of non-overlapping occurrences of sub in s.
+int64_t spy_str_count(const char *s, const char *sub) {
+    int64_t n = *(int64_t*)s;
+    int64_t m = *(int64_t*)sub;
+    const char *sd = SPY_SDATA(s);
+    const char *td = SPY_SDATA(sub);
+    if (m == 0) return n + 1;
+    int64_t cnt = 0;
+    for (int64_t i = 0; i + m <= n; ) {
+        if (memcmp(sd + i, td, m) == 0) { cnt++; i += m; }
+        else i++;
+    }
+    return cnt;
+}
+
+char* spy_str_replace(const char *s, const char *oldp, const char *newp) {
+    int64_t n = *(int64_t*)s;
+    int64_t om = *(int64_t*)oldp;
+    int64_t nm = *(int64_t*)newp;
+    const char *sd = SPY_SDATA(s);
+    const char *od = SPY_SDATA(oldp);
+    const char *nd = SPY_SDATA(newp);
+    if (om == 0) return spy_str_new(sd, n); // mirror: no replacement on empty old
+    int64_t cnt = spy_str_count(s, oldp);
+    int64_t out_len = n + cnt * (nm - om);
+    char *out = GC_MALLOC_ATOMIC(sizeof(int64_t) + (out_len > 0 ? out_len : 1));
+    *(int64_t*)out = out_len;
+    char *o = out + sizeof(int64_t);
+    int64_t j = 0;
+    for (int64_t i = 0; i < n; ) {
+        if (i + om <= n && memcmp(sd + i, od, om) == 0) {
+            memcpy(o + j, nd, nm); j += nm; i += om;
+        } else {
+            o[j++] = sd[i++];
+        }
+    }
+    return out;
+}
+
+char* spy_str_zfill(const char *s, int64_t width) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    if (width <= n) return spy_str_new(d, n);
+    int64_t pad = width - n;
+    char *out = GC_MALLOC_ATOMIC(sizeof(int64_t) + width);
+    *(int64_t*)out = width;
+    char *o = out + sizeof(int64_t);
+    int64_t start = 0;
+    // Keep a leading sign in front of the zero padding.
+    if (n > 0 && (d[0] == '+' || d[0] == '-')) {
+        o[0] = d[0];
+        start = 1;
+    }
+    for (int64_t i = 0; i < pad; i++) o[start + i] = '0';
+    memcpy(o + start + pad, d + start, n - start);
+    return out;
+}
+
+// split: returns a list[str]. sep == "" means split on runs of whitespace
+// (Python's str.split() with no argument).
+char* spy_str_split(const char *s, const char *sep) {
+    int64_t n = *(int64_t*)s;
+    int64_t sn = *(int64_t*)sep;
+    const char *d = SPY_SDATA(s);
+    const char *sd = SPY_SDATA(sep);
+    char *list = spy_list_new(sizeof(char*));
+    if (sn == 0) {
+        int64_t i = 0;
+        while (i < n) {
+            while (i < n && spy_is_space_ch((unsigned char)d[i])) i++;
+            if (i >= n) break;
+            int64_t start = i;
+            while (i < n && !spy_is_space_ch((unsigned char)d[i])) i++;
+            char *piece = spy_str_new(d + start, i - start);
+            spy_list_append(list, (const char*)&piece);
+        }
+        return list;
+    }
+    int64_t start = 0;
+    int64_t i = 0;
+    while (i + sn <= n) {
+        if (memcmp(d + i, sd, sn) == 0) {
+            char *piece = spy_str_new(d + start, i - start);
+            spy_list_append(list, (const char*)&piece);
+            i += sn;
+            start = i;
+        } else {
+            i++;
+        }
+    }
+    char *last = spy_str_new(d + start, n - start);
+    spy_list_append(list, (const char*)&last);
+    return list;
+}
+
+// join: sep.join(parts). parts is a list[str].
+char* spy_str_join(const char *sep, const char *list_ptr) {
+    int64_t cnt = spy_list_len(list_ptr);
+    int64_t sn = *(int64_t*)sep;
+    const char *sd = SPY_SDATA(sep);
+    int64_t total = 0;
+    for (int64_t i = 0; i < cnt; i++) {
+        char *p = *(char**)spy_list_get(list_ptr, i);
+        total += *(int64_t*)p;
+        if (i > 0) total += sn;
+    }
+    char *out = GC_MALLOC_ATOMIC(sizeof(int64_t) + (total > 0 ? total : 1));
+    *(int64_t*)out = total;
+    char *o = out + sizeof(int64_t);
+    int64_t j = 0;
+    for (int64_t i = 0; i < cnt; i++) {
+        if (i > 0) { memcpy(o + j, sd, sn); j += sn; }
+        char *p = *(char**)spy_list_get(list_ptr, i);
+        int64_t pn = *(int64_t*)p;
+        memcpy(o + j, SPY_SDATA(p), pn);
+        j += pn;
+    }
+    return out;
+}
+
+int spy_str_isdigit(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    if (n == 0) return 0;
+    for (int64_t i = 0; i < n; i++)
+        if (d[i] < '0' || d[i] > '9') return 0;
+    return 1;
+}
+
+int spy_str_isalpha(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    if (n == 0) return 0;
+    for (int64_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)d[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return 0;
+    }
+    return 1;
+}
+
+int spy_str_isspace(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    if (n == 0) return 0;
+    for (int64_t i = 0; i < n; i++)
+        if (!spy_is_space_ch((unsigned char)d[i])) return 0;
+    return 1;
+}
+
+// isupper/islower: true iff there is at least one cased char and none of
+// the opposite case (matching CPython).
+int spy_str_isupper(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    int cased = 0;
+    for (int64_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)d[i];
+        if (c >= 'a' && c <= 'z') return 0;
+        if (c >= 'A' && c <= 'Z') cased = 1;
+    }
+    return cased;
+}
+
+int spy_str_islower(const char *s) {
+    int64_t n = *(int64_t*)s;
+    const char *d = SPY_SDATA(s);
+    int cased = 0;
+    for (int64_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)d[i];
+        if (c >= 'A' && c <= 'Z') return 0;
+        if (c >= 'a' && c <= 'z') cased = 1;
+    }
+    return cased;
 }
 
 // ==================== Slicing ====================
@@ -403,6 +699,111 @@ char* spy_bytearray_slice(const char *ba_ptr, int64_t low, int64_t high, int64_t
     return spy_list_slice(ba_ptr, low, high, step, flags);
 }
 
+// ---- list methods ----
+// Element comparison: kind 1 means elements are spy_str pointers (compare by
+// value); anything else compares the raw elem_size bytes (ints / floats /
+// bools / pointer identity).
+static int spy_list_elem_eq(const char *a, const char *b, int64_t elem_size, int64_t kind) {
+    if (kind == 1) {
+        return spy_str_eq(*(char* const*)a, *(char* const*)b);
+    }
+    return memcmp(a, b, elem_size) == 0;
+}
+
+// pop(): remove and return a pointer to the last element. The buffer keeps
+// the bytes (only len shrinks), so the caller may read them immediately.
+char* spy_list_pop(char *list_ptr) {
+    SpyList *l = (SpyList*)list_ptr;
+    if (l->len == 0) { fprintf(stderr, "pop from empty list\n"); exit(1); }
+    l->len--;
+    return l->data + l->len * l->elem_size;
+}
+
+void spy_list_insert(char *list_ptr, int64_t index, const char *elem) {
+    SpyList *l = (SpyList*)list_ptr;
+    if (index < 0) index = 0;
+    if (index > l->len) index = l->len;
+    if (l->len >= l->cap) { l->cap *= 2; l->data = GC_REALLOC(l->data, l->cap * l->elem_size); }
+    memmove(l->data + (index + 1) * l->elem_size,
+            l->data + index * l->elem_size,
+            (l->len - index) * l->elem_size);
+    memcpy(l->data + index * l->elem_size, elem, l->elem_size);
+    l->len++;
+}
+
+int64_t spy_list_index(const char *list_ptr, const char *elem, int64_t kind) {
+    SpyList *l = (SpyList*)list_ptr;
+    for (int64_t i = 0; i < l->len; i++)
+        if (spy_list_elem_eq(l->data + i * l->elem_size, elem, l->elem_size, kind)) return i;
+    return -1;
+}
+
+int64_t spy_list_count_elem(const char *list_ptr, const char *elem, int64_t kind) {
+    SpyList *l = (SpyList*)list_ptr;
+    int64_t c = 0;
+    for (int64_t i = 0; i < l->len; i++)
+        if (spy_list_elem_eq(l->data + i * l->elem_size, elem, l->elem_size, kind)) c++;
+    return c;
+}
+
+void spy_list_remove(char *list_ptr, const char *elem, int64_t kind) {
+    SpyList *l = (SpyList*)list_ptr;
+    for (int64_t i = 0; i < l->len; i++) {
+        if (spy_list_elem_eq(l->data + i * l->elem_size, elem, l->elem_size, kind)) {
+            memmove(l->data + i * l->elem_size,
+                    l->data + (i + 1) * l->elem_size,
+                    (l->len - i - 1) * l->elem_size);
+            l->len--;
+            return;
+        }
+    }
+    fprintf(stderr, "list.remove(x): x not in list\n");
+    exit(1);
+}
+
+void spy_list_reverse(char *list_ptr) {
+    SpyList *l = (SpyList*)list_ptr;
+    int64_t es = l->elem_size;
+    for (int64_t i = 0, j = l->len - 1; i < j; i++, j--) {
+        for (int64_t k = 0; k < es; k++) {
+            char t = l->data[i * es + k];
+            l->data[i * es + k] = l->data[j * es + k];
+            l->data[j * es + k] = t;
+        }
+    }
+}
+
+void spy_list_clear(char *list_ptr) {
+    ((SpyList*)list_ptr)->len = 0;
+}
+
+void spy_list_extend(char *dst_ptr, const char *src_ptr) {
+    SpyList *src = (SpyList*)src_ptr;
+    for (int64_t i = 0; i < src->len; i++)
+        spy_list_append(dst_ptr, src->data + i * src->elem_size);
+}
+
+static int spy_cmp_i64(const void *a, const void *b) {
+    int64_t x = *(const int64_t*)a, y = *(const int64_t*)b;
+    return (x > y) - (x < y);
+}
+static int spy_cmp_f64(const void *a, const void *b) {
+    double x = *(const double*)a, y = *(const double*)b;
+    return (x > y) - (x < y);
+}
+static int spy_cmp_str(const void *a, const void *b) {
+    int64_t c = spy_str_compare(*(char* const*)a, *(char* const*)b);
+    return c < 0 ? -1 : (c > 0 ? 1 : 0);
+}
+
+// sort(): kind 0 = int64 ascending, 1 = double ascending, 2 = str ascending.
+void spy_list_sort(char *list_ptr, int64_t kind) {
+    SpyList *l = (SpyList*)list_ptr;
+    if (kind == 1) qsort(l->data, l->len, l->elem_size, spy_cmp_f64);
+    else if (kind == 2) qsort(l->data, l->len, l->elem_size, spy_cmp_str);
+    else qsort(l->data, l->len, l->elem_size, spy_cmp_i64);
+}
+
 // ==================== Maps ====================
 // Simple open-addressing hash map
 
@@ -545,6 +946,30 @@ int64_t spy_map_len(const char *map_ptr) {
     return map->len;
 }
 
+// Iteration helpers, mirroring spy_set_next/spy_set_key. Walk by passing
+// the returned index back in, starting with -1; -1 also signals "done".
+// spy_map_key_at / spy_map_val_at return the same pointer the entry holds
+// — for hash_type=1 (str) the key slot stores a char* (pointer-to-pointer
+// to spy_str), the layer above must dereference accordingly. Useful for
+// json.dumps and any future generic map walker.
+int64_t spy_map_next(const char *map_ptr, int64_t prev) {
+    SpyMap *map = (SpyMap*)map_ptr;
+    for (int64_t i = prev + 1; i < map->cap; i++) {
+        if (map->entries[i].occupied) return i;
+    }
+    return -1;
+}
+
+char* spy_map_key_at(const char *map_ptr, int64_t idx) {
+    SpyMap *map = (SpyMap*)map_ptr;
+    return map->entries[idx].key;
+}
+
+char* spy_map_val_at(const char *map_ptr, int64_t idx) {
+    SpyMap *map = (SpyMap*)map_ptr;
+    return map->entries[idx].value;
+}
+
 void spy_map_extend(char *dst_ptr, const char *src_ptr) {
     SpyMap *src = (SpyMap*)src_ptr;
     for (int64_t i = 0; i < src->cap; i++) {
@@ -552,6 +977,44 @@ void spy_map_extend(char *dst_ptr, const char *src_ptr) {
             spy_map_set(dst_ptr, src->entries[i].key, src->entries[i].value);
         }
     }
+}
+
+// keys()/values(): materialize a list[K] / list[V]. Iteration order is the
+// internal table order (CPython preserves insertion order; spython does not).
+char* spy_map_keys(const char *map_ptr) {
+    SpyMap *map = (SpyMap*)map_ptr;
+    char *list = spy_list_new(map->key_size);
+    for (int64_t i = 0; i < map->cap; i++)
+        if (map->entries[i].occupied) spy_list_append(list, map->entries[i].key);
+    return list;
+}
+
+char* spy_map_values(const char *map_ptr) {
+    SpyMap *map = (SpyMap*)map_ptr;
+    char *list = spy_list_new(map->val_size);
+    for (int64_t i = 0; i < map->cap; i++)
+        if (map->entries[i].occupied) spy_list_append(list, map->entries[i].value);
+    return list;
+}
+
+// get(key, default): pointer to the stored value, or to the default if the
+// key is absent.
+char* spy_map_get_or(const char *map_ptr, const char *key, const char *defptr) {
+    SpyMap *map = (SpyMap*)map_ptr;
+    uint64_t h = map_hash(map, key) % map->cap;
+    for (int64_t i = 0; i < map->cap; i++) {
+        int64_t idx = (h + i) % map->cap;
+        MapEntry *entry = &map->entries[idx];
+        if (!entry->occupied) return (char*)defptr;
+        if (map_key_eq(map, entry->key, key)) return entry->value;
+    }
+    return (char*)defptr;
+}
+
+void spy_map_clear(char *map_ptr) {
+    SpyMap *map = (SpyMap*)map_ptr;
+    for (int64_t i = 0; i < map->cap; i++) map->entries[i].occupied = 0;
+    map->len = 0;
 }
 
 static void map_resize(SpyMap *map) {
@@ -818,6 +1281,54 @@ int64_t spy_bytearray_len(const char *ba_ptr) {
     return list->len;
 }
 
+// Parse a spython str into an int64. Empty input or any non-digit
+// (other than a leading +/-) raises ValueError-shaped abort. Mirrors
+// CPython int(str) for the simple decimal case; binary/hex prefixes
+// are not recognised. Used by codegen for `int(s)` where s: str.
+int64_t spy_str_to_int(const char *spy_str) {
+    int64_t n = spy_str_len(spy_str);
+    const char *d = spy_str + sizeof(int64_t);
+    int64_t i = 0;
+    int sign = 1;
+    if (i < n && (d[i] == '+' || d[i] == '-')) {
+        if (d[i] == '-') sign = -1;
+        i++;
+    }
+    if (i >= n) {
+        fprintf(stderr, "ValueError: int() with empty string\n");
+        exit(1);
+    }
+    int64_t v = 0;
+    while (i < n) {
+        char c = d[i];
+        if (c < '0' || c > '9') {
+            fprintf(stderr, "ValueError: invalid literal for int(): '%.*s'\n",
+                    (int)n, d);
+            exit(1);
+        }
+        v = v * 10 + (c - '0');
+        i++;
+    }
+    return v * sign;
+}
+
+double spy_str_to_float(const char *spy_str) {
+    int64_t n = spy_str_len(spy_str);
+    const char *d = spy_str + sizeof(int64_t);
+    char tmp[64];
+    if (n >= (int64_t)sizeof(tmp)) {
+        char *big = (char*)malloc((size_t)(n + 1));
+        memcpy(big, d, (size_t)n);
+        big[n] = 0;
+        double v = strtod(big, NULL);
+        free(big);
+        return v;
+    }
+    memcpy(tmp, d, (size_t)n);
+    tmp[n] = 0;
+    return strtod(tmp, NULL);
+}
+
 // ==================== Math ====================
 
 int64_t spy_int_pow(int64_t base, int64_t exp) {
@@ -829,4 +1340,192 @@ int64_t spy_int_pow(int64_t base, int64_t exp) {
         exp >>= 1;
     }
     return result;
+}
+
+// ==================== Any (tagged value box) ====================
+
+typedef struct SpyAny {
+    int32_t tag;
+    int32_t pad;
+    int64_t payload; // scalar payload, double-bits, or pointer-as-int
+} SpyAny;
+
+static SpyAny *spy_any_alloc(int has_pointer_payload) {
+    // GC_MALLOC_ATOMIC for scalar payloads tells Boehm there are no inner
+    // pointers; GC_MALLOC for str/list/dict/bytes payloads so the GC keeps
+    // the referent alive.
+    SpyAny *a = (SpyAny*)(has_pointer_payload ? GC_MALLOC(sizeof(SpyAny))
+                                              : GC_MALLOC_ATOMIC(sizeof(SpyAny)));
+    a->pad = 0;
+    return a;
+}
+
+char* spy_any_none(void) {
+    SpyAny *a = spy_any_alloc(0);
+    a->tag = SPY_ANY_NONE;
+    a->payload = 0;
+    return (char*)a;
+}
+
+char* spy_any_box_int(int64_t v) {
+    SpyAny *a = spy_any_alloc(0);
+    a->tag = SPY_ANY_INT;
+    a->payload = v;
+    return (char*)a;
+}
+
+char* spy_any_box_float(double v) {
+    SpyAny *a = spy_any_alloc(0);
+    a->tag = SPY_ANY_FLOAT;
+    int64_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    a->payload = bits;
+    return (char*)a;
+}
+
+char* spy_any_box_bool(int v) {
+    SpyAny *a = spy_any_alloc(0);
+    a->tag = SPY_ANY_BOOL;
+    a->payload = v ? 1 : 0;
+    return (char*)a;
+}
+
+char* spy_any_box_str(const char *s) {
+    SpyAny *a = spy_any_alloc(1);
+    a->tag = SPY_ANY_STR;
+    a->payload = (int64_t)(uintptr_t)s;
+    return (char*)a;
+}
+
+char* spy_any_box_list(const char *l) {
+    SpyAny *a = spy_any_alloc(1);
+    a->tag = SPY_ANY_LIST;
+    a->payload = (int64_t)(uintptr_t)l;
+    return (char*)a;
+}
+
+char* spy_any_box_map(const char *m) {
+    SpyAny *a = spy_any_alloc(1);
+    a->tag = SPY_ANY_DICT;
+    a->payload = (int64_t)(uintptr_t)m;
+    return (char*)a;
+}
+
+char* spy_any_box_bytes(const char *b) {
+    SpyAny *a = spy_any_alloc(1);
+    a->tag = SPY_ANY_BYTES;
+    a->payload = (int64_t)(uintptr_t)b;
+    return (char*)a;
+}
+
+int spy_any_tag(const char *a) {
+    return ((const SpyAny*)a)->tag;
+}
+
+int spy_any_is_none(const char *a) {
+    return ((const SpyAny*)a)->tag == SPY_ANY_NONE;
+}
+
+static const char *spy_any_tag_name(int tag) {
+    switch (tag) {
+        case SPY_ANY_NONE:  return "None";
+        case SPY_ANY_INT:   return "int";
+        case SPY_ANY_FLOAT: return "float";
+        case SPY_ANY_BOOL:  return "bool";
+        case SPY_ANY_STR:   return "str";
+        case SPY_ANY_LIST:  return "list";
+        case SPY_ANY_DICT:  return "dict";
+        case SPY_ANY_BYTES: return "bytes";
+        default:            return "<unknown>";
+    }
+}
+
+static void spy_any_type_error(const char *want, int got) {
+    fprintf(stderr, "TypeError: expected %s, got %s in Any unbox\n",
+            want, spy_any_tag_name(got));
+    exit(1);
+}
+
+int64_t spy_any_unbox_int(const char *a) {
+    const SpyAny *s = (const SpyAny*)a;
+    if (s->tag != SPY_ANY_INT) spy_any_type_error("int", s->tag);
+    return s->payload;
+}
+
+double spy_any_unbox_float(const char *a) {
+    const SpyAny *s = (const SpyAny*)a;
+    if (s->tag != SPY_ANY_FLOAT) {
+        // Allow int -> float (lossless) for ergonomic JSON parsing where
+        // numbers are sometimes integers, sometimes floats.
+        if (s->tag == SPY_ANY_INT) return (double)s->payload;
+        spy_any_type_error("float", s->tag);
+    }
+    double v;
+    int64_t bits = s->payload;
+    memcpy(&v, &bits, sizeof(v));
+    return v;
+}
+
+int spy_any_unbox_bool(const char *a) {
+    const SpyAny *s = (const SpyAny*)a;
+    if (s->tag != SPY_ANY_BOOL) spy_any_type_error("bool", s->tag);
+    return (int)s->payload;
+}
+
+char* spy_any_unbox_str(const char *a) {
+    const SpyAny *s = (const SpyAny*)a;
+    if (s->tag != SPY_ANY_STR) spy_any_type_error("str", s->tag);
+    return (char*)(uintptr_t)s->payload;
+}
+
+char* spy_any_unbox_list(const char *a) {
+    const SpyAny *s = (const SpyAny*)a;
+    if (s->tag != SPY_ANY_LIST) spy_any_type_error("list", s->tag);
+    return (char*)(uintptr_t)s->payload;
+}
+
+char* spy_any_unbox_map(const char *a) {
+    const SpyAny *s = (const SpyAny*)a;
+    if (s->tag != SPY_ANY_DICT) spy_any_type_error("dict", s->tag);
+    return (char*)(uintptr_t)s->payload;
+}
+
+char* spy_any_unbox_bytes(const char *a) {
+    const SpyAny *s = (const SpyAny*)a;
+    if (s->tag != SPY_ANY_BYTES) spy_any_type_error("bytes", s->tag);
+    return (char*)(uintptr_t)s->payload;
+}
+
+// Cheap repr for debugging / generic str(any). Lists/dicts/bytes render as
+// the bare type name with no contents — full pretty-printing requires a
+// recursive walker that knows the element shapes.
+char* spy_any_to_str(const char *a) {
+    const SpyAny *s = (const SpyAny*)a;
+    char buf[64];
+    int len;
+    switch (s->tag) {
+        case SPY_ANY_NONE:
+            return spy_str_new("None", 4);
+        case SPY_ANY_INT:
+            len = snprintf(buf, sizeof(buf), "%lld", (long long)s->payload);
+            return spy_str_new(buf, len);
+        case SPY_ANY_FLOAT: {
+            double v;
+            int64_t bits = s->payload;
+            memcpy(&v, &bits, sizeof(v));
+            len = spy_format_float(v, buf, sizeof(buf));
+            return spy_str_new(buf, len);
+        }
+        case SPY_ANY_BOOL:
+            return s->payload ? spy_str_new("True", 4) : spy_str_new("False", 5);
+        case SPY_ANY_STR:
+            return (char*)(uintptr_t)s->payload;
+        case SPY_ANY_LIST:
+            return spy_str_new("<list>", 6);
+        case SPY_ANY_DICT:
+            return spy_str_new("<dict>", 6);
+        case SPY_ANY_BYTES:
+            return spy_str_new("<bytes>", 7);
+    }
+    return spy_str_new("<any>", 5);
 }

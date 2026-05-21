@@ -1,0 +1,37 @@
+import os
+import ospath
+import io
+
+print(ospath.isabs("/a/b"))
+print(ospath.isabs("a/b"))
+print(ospath.normpath("a/b/../c"))
+print(ospath.normpath("/a/../.."))
+print(ospath.normpath("../../a"))
+print(ospath.normpath("foo/./bar/"))
+print(ospath.normpath("///foo"))
+print(ospath.normpath("//foo"))
+print(ospath.normpath("."))
+print(ospath.normpath(""))
+print(ospath.normpath("/a/b/c/../../d"))
+print(ospath.commonprefix(["/usr/local/bin", "/usr/local/lib"]))
+print(ospath.commonprefix(["abc", "abd", "abe"]))
+home: str = os.getenv("HOME")
+print(ospath.expanduser("~/x") == home + "/x")
+print(ospath.expanduser("/no/tilde"))
+
+# getsize on a known file.
+p: str = "/tmp/spython_ospath_sz.txt"
+f = io.open(p, "w")
+f.write("12345")
+f.close()
+print(ospath.getsize(p))
+os.remove(p)
+dr, pp = ospath.splitdrive("/a/b")
+print(dr == "")
+print(pp)
+q: str = "/tmp/spython_mtime.txt"
+fq = io.open(q, "w")
+fq.write("x")
+fq.close()
+print(ospath.getmtime(q) > 0.0)
+os.remove(q)

@@ -11,6 +11,10 @@ type TypeAnnotation struct {
 	Pos    Pos
 	Name   string
 	Params []*TypeAnnotation // e.g., list[int] -> Params: [{Name: "int"}]
+	// Callable[[A, B], R]: when Name == "Callable", CallableArgs holds the
+	// bracketed argument types and CallableRet holds the return type.
+	CallableArgs []*TypeAnnotation
+	CallableRet  *TypeAnnotation
 }
 
 // Node interfaces
@@ -202,6 +206,12 @@ type FuncDef struct {
 	// statement. Generator functions compile to a state-machine class
 	// rather than a flat LLVM function.
 	IsGenerator bool
+	// IsClosure is set by the type checker for a nested function definition
+	// (a `def` inside another function). Such functions are first-class
+	// closure values; Captures lists the free variables they capture from
+	// the enclosing scope.
+	IsClosure bool
+	Captures  []string
 }
 
 type ParamKind int
@@ -454,6 +464,22 @@ func (e *CallExpr) HasVariadicForms() bool {
 
 func (e *CallExpr) GetPos() Pos { return e.Pos }
 func (e *CallExpr) exprNode()   {}
+
+// LambdaExpr is `lambda p0, p1, ...: body`. Parameter types are not written
+// (Python syntax) — they are inferred from the expected Callable type in
+// context (assignment annotation or argument position). Captures holds the
+// names of free variables captured from the enclosing scope (filled by the
+// type checker); the resolved type is a closure-flagged *types.FuncType.
+type LambdaExpr struct {
+	baseExpr
+	Pos      Pos
+	Params   []string
+	Body     Expr
+	Captures []string
+}
+
+func (e *LambdaExpr) GetPos() Pos { return e.Pos }
+func (e *LambdaExpr) exprNode()   {}
 
 type IndexExpr struct {
 	baseExpr

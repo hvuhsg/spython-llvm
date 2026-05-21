@@ -83,12 +83,10 @@ def _snapshot_match(s: str, matched: bool) -> Match:
 
 class Match:
     def __init__(self, s: str):
-        empty_starts: list[int] = []
-        empty_ends: list[int] = []
         self.string = s
         self.matched = False
-        self.starts = empty_starts
-        self.ends = empty_ends
+        self.starts: list[int] = []
+        self.ends: list[int] = []
 
     def _check(self, group: int) -> None:
         if not self.matched:

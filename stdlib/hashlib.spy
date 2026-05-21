@@ -23,3 +23,22 @@ def sha384(data: bytes) -> str: ...
 
 @extern
 def sha512(data: bytes) -> str: ...
+
+# new(name, data) — the generic factory. CPython returns a hash object; here
+# it returns the hex digest, dispatching on the algorithm name. Unknown
+# names raise ValueError, matching CPython's rejection of unsupported types.
+def new(name: str, data: bytes) -> str:
+    if name == "md5":
+        return md5(data)
+    if name == "sha1":
+        return sha1(data)
+    if name == "sha224":
+        return sha224(data)
+    if name == "sha256":
+        return sha256(data)
+    if name == "sha384":
+        return sha384(data)
+    if name == "sha512":
+        return sha512(data)
+    e: ValueError = ValueError(name)
+    raise e

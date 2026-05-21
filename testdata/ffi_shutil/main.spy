@@ -1,0 +1,46 @@
+import io
+import os
+import ospath
+import shutil
+
+base: str = "/tmp/spython_shutil_t"
+
+# Clean any leftovers from a prior run.
+if ospath.exists(base):
+    shutil.rmtree(base)
+
+os.mkdir(base)
+
+# Create a source file.
+a: str = ospath.join(base, "a.txt")
+f = io.open(a, "w")
+f.write("hello shutil")
+f.close()
+
+# copyfile -> b.txt
+b: str = ospath.join(base, "b.txt")
+shutil.copyfile(a, b)
+fb = io.open(b, "r")
+print(fb.read())
+fb.close()
+
+# copy a.txt into a subdirectory.
+sub: str = ospath.join(base, "sub")
+os.mkdir(sub)
+shutil.copy(a, sub)
+print(ospath.isfile(ospath.join(sub, "a.txt")))
+
+# move b.txt -> c.txt
+c: str = ospath.join(base, "c.txt")
+shutil.move(b, c)
+print(ospath.isfile(c))
+print(ospath.isfile(b))
+
+# which finds a real executable and rejects a bogus one.
+sh: str = shutil.which("sh")
+print(ospath.isfile(sh))
+print(shutil.which("definitely_not_a_real_command_xyz"))
+
+# rmtree removes the whole tree.
+shutil.rmtree(base)
+print(ospath.exists(base))

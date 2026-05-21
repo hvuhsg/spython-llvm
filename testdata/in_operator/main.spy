@@ -1,0 +1,19 @@
+print("ell" in "hello")
+print("xyz" in "hello")
+print("ell" not in "hello")
+xs: list[int] = [1, 2, 3]
+print(2 in xs)
+print(5 in xs)
+print(5 not in xs)
+ss: list[str] = ["a", "b"]
+print("b" in ss)
+print("c" in ss)
+st: set[int] = {1, 2, 3}
+print(2 in st)
+print(9 in st)
+d: map[str, int] = {"x": 1, "y": 2}
+print("x" in d)
+print("z" in d)
+print("z" not in d)
+if "ell" in "hello":
+    print("found")

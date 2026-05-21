@@ -1,0 +1,36 @@
+import secrets
+
+print(len(secrets.token_hex(16)))
+print(len(secrets.token_hex(32)))
+print(len(secrets.token_bytes(16)))
+print(len(secrets.token_urlsafe(16)))
+
+# token_hex chars are all hex.
+h: str = secrets.token_hex(64)
+allhex: bool = True
+for i in range(len(h)):
+    c: str = h[i:i+1]
+    isdigit: bool = "0" <= c and c <= "9"
+    ishex: bool = "a" <= c and c <= "f"
+    if not isdigit:
+        if not ishex:
+            allhex = False
+print(allhex)
+
+# randbelow range.
+okr: bool = True
+for i in range(500):
+    v: int = secrets.randbelow(100)
+    if v < 0:
+        okr = False
+    if v >= 100:
+        okr = False
+print(okr)
+
+# randbelow(1) is always 0.
+print(secrets.randbelow(1))
+print(secrets.randbelow(0))
+
+print(secrets.compare_digest("abc", "abc"))
+print(secrets.compare_digest("abc", "abd"))
+print(secrets.compare_digest("abc", "ab"))

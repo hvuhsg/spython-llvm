@@ -1,0 +1,25 @@
+# stdlib/json.spy — JSON loads/dumps backed by stdlib/json.c.
+#
+# loads(s) parses a JSON document into a tagged Any value: ints / floats /
+# bools / strs land in their respective tags, JSON arrays become
+# Any[list[Any]], and JSON objects become Any[map[str, Any]]. Use the
+# any_int / any_float / any_str / any_bool / any_list / any_dict / any_is_none
+# builtins to walk the result.
+#
+# dumps(value) takes any Any value and returns a JSON string. Bytes are
+# not representable in JSON and serialise as `null` with a stderr warning.
+#
+# Limits vs CPython json:
+#   * Object key order is not preserved (the underlying SpyMap is a hash
+#     table). CPython's json preserves insertion order.
+#   * Parse errors print "JSONDecodeError: ..." and exit; the exception
+#     hierarchy isn't wired through the FFI boundary yet.
+#   * No `indent`, `separators`, `sort_keys`, `default`, or `object_hook`.
+#   * Integers are bounded to int64; numbers outside that range silently
+#     truncate when parsed via the int branch.
+
+@extern
+def loads(s: str) -> Any: ...
+
+@extern
+def dumps(value: Any) -> str: ...

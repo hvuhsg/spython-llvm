@@ -1,0 +1,82 @@
+# stdlib/shutil.spy — high-level file operations, layered over io / os /
+# ospath. Pure spython; no sibling C file.
+#
+# Differences from CPython: copy() does not preserve permissions/metadata
+# (no chmod yet), so copy and copy2 are identical here; functions that
+# would return None in CPython return the destination path instead of None
+# (spython has no implicit None return for str-typed callers), and which()
+# returns "" rather than None when nothing is found. move() uses os.rename
+# and therefore does not fall back to copy+delete across filesystems.
+
+import io
+import os
+import ospath
+
+# Copy the contents of src to dst (overwriting dst). Returns dst.
+def copyfile(src: str, dst: str) -> str:
+    fin = io.open(src, "r")
+    data: str = fin.read()
+    fin.close()
+    fout = io.open(dst, "w")
+    fout.write(data)
+    fout.close()
+    return dst
+
+# Copy src into dst. If dst is a directory, copy into it under src's
+# basename. Returns the path to the newly-created file.
+def copyfile_into(src: str, dst: str) -> str:
+    target: str = dst
+    if ospath.isdir(dst):
+        target = ospath.join(dst, ospath.basename(src))
+    return copyfile(src, target)
+
+# copy() / copy2(): CPython copy2 also copies metadata; we have no chmod, so
+# both behave like copy() here.
+def copy(src: str, dst: str) -> str:
+    return copyfile_into(src, dst)
+
+def copy2(src: str, dst: str) -> str:
+    return copyfile_into(src, dst)
+
+# Move src to dst via rename. If dst is a directory, move into it under
+# src's basename. Returns the final destination path.
+def move(src: str, dst: str) -> str:
+    target: str = dst
+    if ospath.isdir(dst):
+        target = ospath.join(dst, ospath.basename(src))
+    os.rename(src, target)
+    return target
+
+# Recursively delete a directory tree rooted at path.
+def rmtree(path: str) -> None:
+    names: list[str] = os.listdir(path)
+    for name in names:
+        full: str = ospath.join(path, name)
+        if ospath.isdir(full):
+            rmtree(full)
+        else:
+            os.remove(full)
+    os.rmdir(path)
+
+# Locate an executable on PATH (or verify one given by path). Returns the
+# full path, or "" if not found. Mirrors shutil.which for the common case.
+def which(cmd: str) -> str:
+    has_sep: bool = "/" in cmd
+    if has_sep:
+        if ospath.isfile(cmd):
+            if os.access(cmd, os.X_OK):
+                return cmd
+        return ""
+    path: str = os.getenv("PATH")
+    if len(path) == 0:
+        return ""
+    dirs: list[str] = path.split(":")
+    for d in dirs:
+        dir2: str = d
+        if len(dir2) == 0:
+            dir2 = "."
+        cand: str = ospath.join(dir2, cmd)
+        if ospath.isfile(cand):
+            if os.access(cand, os.X_OK):
+                return cand
+    return ""

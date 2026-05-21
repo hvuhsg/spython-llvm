@@ -32,3 +32,81 @@ def process_time_ns() -> int: ...
 
 @extern
 def sleep(seconds: float) -> None: ...
+
+
+# ----- Calendar / broken-down time -----
+#
+# struct_time mirrors CPython's time.struct_time: same field names and the
+# same conventions (full year, 1-based month/yday, Monday=0 weekday). It is
+# a plain class, so attribute access works (st.tm_year) but tuple indexing
+# (st[0]) does not.
+
+class struct_time:
+    def __init__(self, tm_year: int, tm_mon: int, tm_mday: int, tm_hour: int, tm_min: int, tm_sec: int, tm_wday: int, tm_yday: int, tm_isdst: int):
+        self.tm_year = tm_year
+        self.tm_mon = tm_mon
+        self.tm_mday = tm_mday
+        self.tm_hour = tm_hour
+        self.tm_min = tm_min
+        self.tm_sec = tm_sec
+        self.tm_wday = tm_wday
+        self.tm_yday = tm_yday
+        self.tm_isdst = tm_isdst
+
+@extern
+def _load_local(t: int) -> int: ...
+
+@extern
+def _load_gm(t: int) -> int: ...
+
+@extern
+def _now() -> int: ...
+
+@extern
+def _tm_field(which: int) -> int: ...
+
+@extern
+def _mktime(year: int, mon: int, mday: int, hour: int, minute: int, sec: int, wday: int, yday: int, isdst: int) -> int: ...
+
+@extern
+def _strftime(fmt: str, year: int, mon: int, mday: int, hour: int, minute: int, sec: int, wday: int, yday: int, isdst: int) -> str: ...
+
+@extern
+def _asctime(year: int, mon: int, mday: int, hour: int, minute: int, sec: int, wday: int, yday: int, isdst: int) -> str: ...
+
+def _build() -> struct_time:
+    return struct_time(_tm_field(0), _tm_field(1), _tm_field(2), _tm_field(3), _tm_field(4), _tm_field(5), _tm_field(6), _tm_field(7), _tm_field(8))
+
+# localtime(secs=-1) — broken-down local time. A negative secs means "now"
+# (CPython uses None for that; spython has no Optional[int]).
+def localtime(secs: int = -1) -> struct_time:
+    t: int = secs
+    if secs < 0:
+        t = _now()
+    _load_local(t)
+    return _build()
+
+# gmtime(secs=-1) — broken-down UTC time (see localtime for the -1 default).
+def gmtime(secs: int = -1) -> struct_time:
+    t: int = secs
+    if secs < 0:
+        t = _now()
+    _load_gm(t)
+    return _build()
+
+# mktime(t) — inverse of localtime: struct_time (local) -> epoch seconds.
+def mktime(t: struct_time) -> int:
+    return _mktime(t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, t.tm_wday, t.tm_yday, t.tm_isdst)
+
+# strftime(format, t) — format a struct_time. (CPython defaults t to
+# localtime(); spython requires it explicitly.)
+def strftime(format: str, t: struct_time) -> str:
+    return _strftime(format, t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, t.tm_wday, t.tm_yday, t.tm_isdst)
+
+# asctime(t) — fixed-width text, e.g. 'Sun Jun 20 23:21:05 1993'.
+def asctime(t: struct_time) -> str:
+    return _asctime(t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, t.tm_wday, t.tm_yday, t.tm_isdst)
+
+# ctime(secs) — asctime(localtime(secs)).
+def ctime(secs: int) -> str:
+    return asctime(localtime(secs))

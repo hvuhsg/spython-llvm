@@ -1,0 +1,105 @@
+# stdlib/fnmatch.spy — Unix shell-style wildcard matching.
+#
+# Pure-spython port of CPython's fnmatch. On POSIX, os.path.normcase is the
+# identity, so fnmatch() and fnmatchcase() behave identically and are
+# case-sensitive — this module matches that behaviour.
+#
+# Supported pattern syntax (same as CPython):
+#   *        matches everything
+#   ?        matches any single character
+#   [seq]    matches any character in seq
+#   [!seq]   matches any character not in seq
+#
+# A '[' with no matching ']' is treated as a literal '['.
+
+# Return True if character c is a member of the bracket expression that
+# begins at p[start] (the char after '['), ends just before p[end] (the
+# index of the closing ']'), honouring '-' ranges. Negation is handled by
+# the caller.
+def _class_match(p: str, start: int, end: int, c: str) -> bool:
+    k: int = start
+    while k < end:
+        ch: str = p[k:k + 1]
+        # A range like a-z: current char, then '-', then a closing char that
+        # is not the terminating ']'.
+        if k + 2 < end + 1 and k + 1 < end and p[k + 1:k + 2] == "-":
+            lo: str = ch
+            hi: str = p[k + 2:k + 3]
+            if lo <= c and c <= hi:
+                return True
+            k = k + 3
+        else:
+            if ch == c:
+                return True
+            k = k + 1
+    return False
+
+def _match_at(s: str, si: int, p: str, pi: int) -> bool:
+    ns: int = len(s)
+    np: int = len(p)
+    if pi == np:
+        return si == ns
+    pc: str = p[pi:pi + 1]
+    # '*' collapses runs and matches zero or more characters.
+    if pc == "*":
+        npi: int = pi + 1
+        while npi < np and p[npi:npi + 1] == "*":
+            npi = npi + 1
+        # '*' matches zero or more characters: try each possible split.
+        ci: int = si
+        while ci <= ns:
+            if _match_at(s, ci, p, npi):
+                return True
+            ci = ci + 1
+        return False
+    if pc == "?":
+        if si < ns:
+            return _match_at(s, si + 1, p, pi + 1)
+        return False
+    # Bracket expression. A ']' immediately after '[' or '[!' is a literal
+    # member, not the terminator.
+    if pc == "[":
+        j: int = pi + 1
+        negate: bool = False
+        if j < np and p[j:j + 1] == "!":
+            negate = True
+            j = j + 1
+        setStart: int = j
+        if j < np and p[j:j + 1] == "]":
+            j = j + 1
+        while j < np and p[j:j + 1] != "]":
+            j = j + 1
+        # No closing bracket: treat '[' as a literal character.
+        if j >= np:
+            if si < ns and s[si:si + 1] == "[":
+                return _match_at(s, si + 1, p, pi + 1)
+            return False
+        # j is the index of the closing ']'.
+        if si < ns:
+            inSet: bool = _class_match(p, setStart, j, s[si:si + 1])
+            if negate:
+                inSet = not inSet
+            if inSet:
+                return _match_at(s, si + 1, p, j + 1)
+        return False
+    # Literal character.
+    if si < ns and s[si:si + 1] == pc:
+        return _match_at(s, si + 1, p, pi + 1)
+    return False
+
+# Test whether name matches pat, case-sensitively (POSIX semantics).
+def fnmatchcase(name: str, pat: str) -> bool:
+    return _match_at(name, 0, pat, 0)
+
+# Test whether name matches pat. On POSIX this is case-sensitive and
+# identical to fnmatchcase (os.path.normcase is the identity there).
+def fnmatch(name: str, pat: str) -> bool:
+    return _match_at(name, 0, pat, 0)
+
+# Return the subset of names that match pat, preserving order.
+def filter(names: list[str], pat: str) -> list[str]:
+    out: list[str] = []
+    for n in names:
+        if _match_at(n, 0, pat, 0):
+            out.append(n)
+    return out

@@ -16,3 +16,47 @@ def uniform(a: float, b: float) -> float: ...
 
 @extern
 def getrandbits(n: int) -> int: ...
+
+
+# Continuous distributions (backed by random.c). gauss and normalvariate
+# both yield N(mu, sigma) via different generators, matching CPython's split.
+@extern
+def gauss(mu: float, sigma: float) -> float: ...
+
+@extern
+def normalvariate(mu: float, sigma: float) -> float: ...
+
+@extern
+def lognormvariate(mu: float, sigma: float) -> float: ...
+
+@extern
+def expovariate(lambd: float) -> float: ...
+
+@extern
+def paretovariate(alpha: float) -> float: ...
+
+@extern
+def weibullvariate(alpha: float, beta: float) -> float: ...
+
+@extern
+def triangular(low: float, high: float, mode: float) -> float: ...
+
+
+# randrange(start, stop, step=1) — like CPython's three-argument form.
+# The single-argument randrange(stop) form isn't expressible (no overloads),
+# so callers pass randrange(0, stop). Negative steps are supported.
+def randrange(start: int, stop: int, step: int = 1) -> int:
+    if step > 0:
+        width: int = stop - start
+        if width <= 0:
+            return start
+        n: int = (width - 1) // step + 1
+        return start + step * randint(0, n - 1)
+    if step < 0:
+        awidth: int = start - stop
+        if awidth <= 0:
+            return start
+        astep: int = -step
+        m: int = (awidth - 1) // astep + 1
+        return start - astep * randint(0, m - 1)
+    return start

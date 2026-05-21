@@ -1,0 +1,47 @@
+# Smoke test for stdlib/json — round-trip parse/serialize plus walking
+# the resulting Any tree via the any_* unbox builtins.
+
+import json
+
+# Parse a simple object.
+v: Any = json.loads('{"name": "Alice", "age": 30, "score": 9.5, "active": true, "kids": null}')
+d: map[str, Any] = any_dict(v)
+
+print(any_str(d["name"]))
+print(any_int(d["age"]))
+print(any_float(d["score"]))
+print(any_bool(d["active"]))
+print(any_is_none(d["kids"]))
+
+# Parse an array of mixed types.
+v2: Any = json.loads('[1, "two", 3.5, true, null]')
+xs: list[Any] = any_list(v2)
+print(any_int(xs[0]))
+print(any_str(xs[1]))
+print(any_float(xs[2]))
+print(any_bool(xs[3]))
+print(any_is_none(xs[4]))
+
+# Nested.
+v3: Any = json.loads('{"items": [{"id": 1}, {"id": 2}]}')
+d3: map[str, Any] = any_dict(v3)
+items: list[Any] = any_list(d3["items"])
+first: map[str, Any] = any_dict(items[0])
+second: map[str, Any] = any_dict(items[1])
+print(any_int(first["id"]))
+print(any_int(second["id"]))
+
+# Round-trip a value built from spython side.
+data: map[str, Any] = {"hello": "world", "n": 42}
+encoded: str = json.dumps(any_none())
+print(encoded)
+encoded2: str = json.dumps(json.loads('{"hello": "world", "n": 42}'))
+# Object key order isn't preserved, so just check it parses back.
+back: map[str, Any] = any_dict(json.loads(encoded2))
+print(any_str(back["hello"]))
+print(any_int(back["n"]))
+
+# Strings with escapes.
+s: str = any_str(json.loads('"line1\\nline2\\ttab\\u00e9"'))
+print(s)
+print(json.dumps(json.loads('"hi"')))

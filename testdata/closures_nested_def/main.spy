@@ -1,0 +1,35 @@
+def make_clamp(lo: int, hi: int) -> Callable[[int], int]:
+    def clamp(x: int) -> int:
+        if x < lo:
+            return lo
+        if x > hi:
+            return hi
+        return x
+    return clamp
+
+c = make_clamp(0, 10)
+print(c(-5))
+print(c(5))
+print(c(99))
+
+def apply_twice(x: int) -> int:
+    def inc(n: int) -> int:
+        return n + 1
+    return inc(inc(x))
+print(apply_twice(5))
+
+# nested def capturing a str, used as a callback into a higher-order fn
+def mapints(xs: list[int], fn: Callable[[int], int]) -> list[int]:
+    out: list[int] = []
+    for v in xs:
+        out.append(fn(v))
+    return out
+
+def scaled_mapper(k: int) -> list[int]:
+    def f(x: int) -> int:
+        return x * k
+    return mapints([1, 2, 3], f)
+r: list[int] = scaled_mapper(10)
+print(r[0])
+print(r[1])
+print(r[2])

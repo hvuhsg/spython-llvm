@@ -78,3 +78,45 @@ int64_t spy_math_isqrt(int64_t n) {
 
 double spy_math__inf(void) { return INFINITY; }
 double spy_math__nan(void) { return NAN; }
+
+// comb(n, k) and perm(n, k): exact int64 results (overflow is the caller's
+// concern, as with factorial). k < 0 in perm means k = n.
+int64_t spy_math_comb(int64_t n, int64_t k) {
+    if (n < 0 || k < 0 || k > n) return 0;
+    if (k > n - k) k = n - k;
+    int64_t r = 1;
+    for (int64_t i = 0; i < k; i++) {
+        r = r * (n - i) / (i + 1);
+    }
+    return r;
+}
+
+int64_t spy_math__perm(int64_t n, int64_t k) {
+    if (k < 0) k = n;
+    if (n < 0 || k > n) return 0;
+    int64_t r = 1;
+    for (int64_t i = 0; i < k; i++) {
+        r *= (n - i);
+    }
+    return r;
+}
+
+// frexp / modf split a double into two parts; spython returns them as a
+// tuple built in the .spy wrapper from these two scalar reads.
+double spy_math__frexp_m(double x) { int e; return frexp(x, &e); }
+int64_t spy_math__frexp_e(double x) { int e; frexp(x, &e); return (int64_t)e; }
+double spy_math__modf_frac(double x) { double ip; return modf(x, &ip); }
+double spy_math__modf_int(double x) { double ip; modf(x, &ip); return ip; }
+
+double spy_math_remainder(double x, double y) { return remainder(x, y); }
+double spy_math_nextafter(double x, double y) { return nextafter(x, y); }
+
+// ulp(x): spacing to the next representable double away from zero.
+double spy_math_ulp(double x) {
+    if (isnan(x)) return x;
+    x = fabs(x);
+    if (isinf(x)) return x;
+    double up = nextafter(x, INFINITY);
+    if (isinf(up)) return x - nextafter(x, -INFINITY);
+    return up - x;
+}

@@ -1,0 +1,65 @@
+# Empty literals (`{}`, `[]`) in argument and return positions resolve
+# their element types from the surrounding annotation. Previously these
+# required binding to a typed local first.
+
+def header_count(headers: map[str, str]) -> int:
+    return len(headers)
+
+def sum_ints(xs: list[int]) -> int:
+    total: int = 0
+    for x in xs:
+        total = total + x
+    return total
+
+def make_headers() -> map[str, str]:
+    return {}
+
+def make_ints() -> list[int]:
+    return []
+
+def greet(name: str, headers: map[str, str]) -> str:
+    return name + "/" + str(len(headers))
+
+# Empty map literal in positional arg.
+print(header_count({}))
+
+# Empty list literal in positional arg.
+print(sum_ints([]))
+
+# Empty return resolves from declared return type.
+h: map[str, str] = make_headers()
+print(len(h))
+
+xs: list[int] = make_ints()
+print(len(xs))
+
+# Empty literal in second positional (after a non-literal arg).
+print(greet("alice", {}))
+
+# Non-empty literal still works (regression check on the hint plumbing).
+print(header_count({"a": "1", "b": "2"}))
+print(sum_ints([10, 20, 30]))
+
+
+# Empty literals as field initializers: the inline annotation pins the
+# element type for `{}` / `[]` directly, with no typed-local detour.
+class Box:
+    def __init__(self, name: str):
+        self.name = name
+        self.tags: list[str] = []
+        self.attrs: map[str, str] = {}
+
+    # Reassigning an already-known field also borrows the field's type.
+    def reset(self):
+        self.tags = []
+        self.attrs = {}
+
+
+b: Box = Box("widget")
+b.tags.append("alpha")
+b.attrs["k"] = "v"
+print(len(b.tags))
+print(len(b.attrs))
+b.reset()
+print(len(b.tags))
+print(len(b.attrs))

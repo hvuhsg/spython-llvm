@@ -566,7 +566,10 @@ func (g *Generator) emitYieldFromStmt(s *parser.YieldStmt) error {
 	bufArr := g.newTmp()
 	g.emitAlloca(bufArr, "[256 x i8]")
 	bufI8 := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = bitcast [256 x i8]* %s to i8*", bufI8, bufArr))
+	// Hoist the jmp_buf bitcast into the entry block: the loop head is
+	// re-entered through the generator dispatch switch (after a yield),
+	// which bypasses this setup, so an inline bitcast would not dominate.
+	g.emitEntry(fmt.Sprintf("  %s = bitcast [256 x i8]* %s to i8*", bufI8, bufArr))
 
 	g.emitLine(fmt.Sprintf("  br label %%%s", loopHead))
 	g.emitLine(fmt.Sprintf("%s:", loopHead))
@@ -741,7 +744,9 @@ func (g *Generator) emitForIterator(s *parser.ForStmt, iterVal string, it *types
 	bufArr := g.newTmp()
 	g.emitAlloca(bufArr, "[256 x i8]")
 	bufI8 := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = bitcast [256 x i8]* %s to i8*", bufI8, bufArr))
+	// Hoist the jmp_buf bitcast into the entry block so it dominates the loop
+	// head, which is re-entered through the generator dispatch switch.
+	g.emitEntry(fmt.Sprintf("  %s = bitcast [256 x i8]* %s to i8*", bufI8, bufArr))
 
 	loopHead := g.newLabel("foriter.head")
 	tryLbl := g.newLabel("foriter.try")

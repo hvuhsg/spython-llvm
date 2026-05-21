@@ -7,11 +7,5 @@ kwlist: list[str] = ["False", "None", "True", "and", "as", "assert", "async", "a
 
 softkwlist: list[str] = ["_", "case", "match", "type"]
 
-# CPython implements this as `frozenset(kwlist).__contains__`; spython has no
-# `in` operator over runtime lists yet, so we walk linearly. Same semantics,
-# different implementation.
 def iskeyword(s: str) -> bool:
-    for kw in kwlist:
-        if kw == s:
-            return True
-    return False
+    return s in kwlist

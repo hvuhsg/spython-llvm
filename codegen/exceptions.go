@@ -208,7 +208,12 @@ func (g *Generator) emitTryStmt(s *parser.TryStmt) error {
 	bufArr := g.newTmp()
 	g.emitAlloca(bufArr, "[256 x i8]")
 	bufI8 := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = bitcast [256 x i8]* %s to i8*", bufI8, bufArr))
+	// Hoist the jmp_buf bitcast into the entry block so it dominates every
+	// use. In a generator's __next__, a try region that spans a yield (e.g.
+	// `yield from`) is re-entered through the dispatch switch, which bypasses
+	// the try-setup block; an inline bitcast there would not dominate the
+	// loop head that runs setjmp.
+	g.emitEntry(fmt.Sprintf("  %s = bitcast [256 x i8]* %s to i8*", bufI8, bufArr))
 
 	tryBody := g.newLabel("try.body")
 	dispatch := g.newLabel("try.dispatch")

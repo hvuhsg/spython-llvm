@@ -1,0 +1,21 @@
+import textwrap
+
+res: list[str] = textwrap.wrap("The quick brown fox jumped over the lazy dog", 15)
+print(len(res))
+for line in res:
+    print(line)
+print("--")
+print(textwrap.fill("aaaa bbbb cccc dddd", 9))
+print("--")
+broken: list[str] = textwrap.wrap("aaaaaaaaaa", 4)
+print(len(broken))
+print(broken[0])
+print(broken[1])
+print(broken[2])
+print("--")
+print(textwrap.shorten("Hello  world  this is  a test", 18))
+print(textwrap.shorten("short text", 50))
+print("--")
+print(textwrap.indent("line one\nline two\n", "> "))
+print("==")
+print(textwrap.dedent("    a\n      b\n    c"))

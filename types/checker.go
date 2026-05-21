@@ -362,12 +362,20 @@ func (c *Checker) registerFuncSignature(s *parser.FuncDef) error {
 }
 
 // isFFIMarshallable reports whether t is an allowed parameter type for an
-// @extern function in v1. Current set: int, float, bool, str, bytes, bytearray.
-// Lists, maps, tuples, class instances, and None are not yet supported as
-// parameters.
+// @extern function in v1. Current set: int, float, bool, str, bytes,
+// bytearray, Any. Any flows across the boundary as a SpyAny pointer
+// (treated as i8* in LLVM); the C side gets to inspect the tag and walk
+// the payload. Lists, maps, tuples, and class instances are still not
+// supported as direct parameters — wrap them in Any if the C side needs
+// to receive them generically.
 func isFFIMarshallable(t Type) bool {
 	switch t.(type) {
-	case *IntType, *FloatType, *BoolType, *StrType, *BytesType, *BytearrayType:
+	case *IntType, *FloatType, *BoolType, *StrType, *BytesType, *BytearrayType, *AnyType:
+		return true
+	case *ListType, *MapType, *SetType:
+		// All three lower to i8* (pointer to a runtime SpyList / SpyMap /
+		// SpySet). The C side can use the public spy_list_* / spy_map_* /
+		// spy_set_* helpers in runtime.h to inspect them.
 		return true
 	}
 	return false
@@ -613,13 +621,31 @@ func (c *Checker) inferFieldsFromStmts(ct *ClassType, stmts []parser.Stmt) error
 				}
 				continue
 			}
+			// Pick a hint so empty literals on the RHS can resolve: prefer
+			// the already-known field type (inherited or assigned earlier),
+			// fall back to an inline type annotation.
+			var annType Type
+			if s.TypeAnn != nil {
+				annType = c.resolveTypeAnnotation(s.TypeAnn)
+			}
+			var hint Type
+			if idx, already := ct.FieldIdx[s.Attr]; already {
+				hint = ct.Fields[idx].Type
+			} else if annType != nil {
+				hint = annType
+			}
+			prevHint := c.typeHint
+			if hint != nil {
+				c.typeHint = hint
+			}
 			valType, err := c.checkExpr(s.Value)
+			c.typeHint = prevHint
 			if err != nil {
 				return err
 			}
 			declaredType := valType
-			if s.TypeAnn != nil {
-				declaredType = c.resolveTypeAnnotation(s.TypeAnn)
+			if annType != nil {
+				declaredType = annType
 				if !IsAssignable(valType, declaredType) {
 					return fmt.Errorf("%d:%d: cannot assign %s to field %s.%s of type %s",
 						s.Pos.Line, s.Pos.Col, valType, ct.Name, s.Attr, declaredType)
@@ -860,7 +886,20 @@ func (c *Checker) checkAttrAssignStmt(s *parser.AttrAssignStmt) error {
 	if err != nil {
 		return err
 	}
+	// Resolve the target field up front (when possible) so empty literals
+	// on the RHS can borrow its type as a hint.
+	var hint Type
+	if inst, ok := objType.(*InstanceType); ok {
+		if idx, hasField := inst.Class.FieldIdx[s.Attr]; hasField {
+			hint = inst.Class.Fields[idx].Type
+		}
+	}
+	prevHint := c.typeHint
+	if hint != nil {
+		c.typeHint = hint
+	}
 	valType, err := c.checkExpr(s.Value)
+	c.typeHint = prevHint
 	if err != nil {
 		return err
 	}
@@ -1148,6 +1187,9 @@ func (c *Checker) checkForStmt(s *parser.ForStmt) error {
 		c.Env.Define(s.VarName, t.Elem)
 	case *StrType:
 		c.Env.Define(s.VarName, &StrType{})
+	case *MapType:
+		// Iterating a dict yields its keys (CPython semantics).
+		c.Env.Define(s.VarName, t.Key)
 	case *IteratorType:
 		c.Env.Define(s.VarName, t.Elem)
 	default:
@@ -1164,11 +1206,200 @@ func (c *Checker) checkForStmt(s *parser.ForStmt) error {
 	return nil
 }
 
+// collectBoundNamesStmts adds, to `bound`, every name a statement list binds
+// locally: assignment targets, for-loop variables, except-bindings, and
+// nested function names. Used for closure capture analysis.
+func collectBoundNamesStmts(stmts []parser.Stmt, bound map[string]bool) {
+	for _, st := range stmts {
+		switch s := st.(type) {
+		case *parser.AssignStmt:
+			bound[s.Name] = true
+		case *parser.AugAssignStmt:
+			bound[s.Name] = true
+		case *parser.MultiAssignStmt:
+			for _, n := range s.Names {
+				bound[n] = true
+			}
+		case *parser.ForStmt:
+			bound[s.VarName] = true
+			collectBoundNamesStmts(s.Body, bound)
+		case *parser.IfStmt:
+			collectBoundNamesStmts(s.Body, bound)
+			for _, el := range s.Elifs {
+				collectBoundNamesStmts(el.Body, bound)
+			}
+			collectBoundNamesStmts(s.ElseBody, bound)
+		case *parser.WhileStmt:
+			collectBoundNamesStmts(s.Body, bound)
+		case *parser.TryStmt:
+			collectBoundNamesStmts(s.Body, bound)
+			for _, ec := range s.Excepts {
+				if ec.VarName != "" {
+					bound[ec.VarName] = true
+				}
+				collectBoundNamesStmts(ec.Body, bound)
+			}
+			collectBoundNamesStmts(s.FinallyBody, bound)
+		case *parser.FuncDef:
+			bound[s.Name] = true
+		}
+	}
+}
+
+// collectFreeVarsStmts collects free variables referenced across a statement
+// list (given the already-bound names), appending in first-occurrence order.
+func collectFreeVarsStmts(stmts []parser.Stmt, bound map[string]bool, seen map[string]bool, out *[]string) {
+	for _, st := range stmts {
+		switch s := st.(type) {
+		case *parser.AssignStmt:
+			collectFreeVars(s.Value, bound, seen, out)
+		case *parser.AugAssignStmt:
+			collectFreeVars(s.Value, bound, seen, out)
+		case *parser.MultiAssignStmt:
+			collectFreeVars(s.Value, bound, seen, out)
+		case *parser.IndexAssignStmt:
+			collectFreeVars(s.Object, bound, seen, out)
+			collectFreeVars(s.Index, bound, seen, out)
+			collectFreeVars(s.Value, bound, seen, out)
+		case *parser.AttrAssignStmt:
+			collectFreeVars(s.Object, bound, seen, out)
+			collectFreeVars(s.Value, bound, seen, out)
+		case *parser.ReturnStmt:
+			if s.Value != nil {
+				collectFreeVars(s.Value, bound, seen, out)
+			}
+		case *parser.ExprStmt:
+			collectFreeVars(s.Expr, bound, seen, out)
+		case *parser.RaiseStmt:
+			if s.Value != nil {
+				collectFreeVars(s.Value, bound, seen, out)
+			}
+		case *parser.IfStmt:
+			collectFreeVars(s.Condition, bound, seen, out)
+			collectFreeVarsStmts(s.Body, bound, seen, out)
+			for _, el := range s.Elifs {
+				collectFreeVars(el.Condition, bound, seen, out)
+				collectFreeVarsStmts(el.Body, bound, seen, out)
+			}
+			collectFreeVarsStmts(s.ElseBody, bound, seen, out)
+		case *parser.WhileStmt:
+			collectFreeVars(s.Condition, bound, seen, out)
+			collectFreeVarsStmts(s.Body, bound, seen, out)
+		case *parser.ForStmt:
+			collectFreeVars(s.Iter, bound, seen, out)
+			collectFreeVarsStmts(s.Body, bound, seen, out)
+		case *parser.TryStmt:
+			collectFreeVarsStmts(s.Body, bound, seen, out)
+			for _, ec := range s.Excepts {
+				collectFreeVarsStmts(ec.Body, bound, seen, out)
+			}
+			collectFreeVarsStmts(s.FinallyBody, bound, seen, out)
+		case *parser.FuncDef:
+			inner := map[string]bool{}
+			for k, v := range bound {
+				inner[k] = v
+			}
+			for _, p := range s.Params {
+				inner[p.Name] = true
+			}
+			collectBoundNamesStmts(s.Body, inner)
+			collectFreeVarsStmts(s.Body, inner, seen, out)
+		}
+	}
+}
+
+// checkNestedFuncDef type-checks a `def` nested inside another function as a
+// first-class closure: it binds a closure-typed name in the enclosing scope,
+// performs capture analysis, and checks the body.
+func (c *Checker) checkNestedFuncDef(s *parser.FuncDef) error {
+	if s.IsGenerator {
+		return fmt.Errorf("%d:%d: nested generator functions are not supported", s.Pos.Line, s.Pos.Col)
+	}
+	paramTypes := []Type{}
+	for _, p := range s.Params {
+		if p.Kind != parser.ParamPositional {
+			return fmt.Errorf("%d:%d: nested function %s cannot use *args/**kwargs", s.Pos.Line, s.Pos.Col, s.Name)
+		}
+		if p.TypeAnn == nil {
+			return fmt.Errorf("%d:%d: parameter %s requires a type annotation", s.Pos.Line, s.Pos.Col, p.Name)
+		}
+		pt := c.resolveTypeAnnotation(p.TypeAnn)
+		if pt == nil {
+			return fmt.Errorf("%d:%d: unknown parameter type: %s", s.Pos.Line, s.Pos.Col, p.TypeAnn.Name)
+		}
+		paramTypes = append(paramTypes, pt)
+	}
+	retType := Type(&NoneType{})
+	if s.ReturnType != nil {
+		retType = c.resolveTypeAnnotation(s.ReturnType)
+		if retType == nil {
+			return fmt.Errorf("%d:%d: unknown return type: %s", s.Pos.Line, s.Pos.Col, s.ReturnType.Name)
+		}
+	}
+	ft := &FuncType{Params: paramTypes, Return: retType, Closure: true}
+	c.Env.Define(s.Name, ft)
+
+	// Capture analysis over the whole body.
+	bound := map[string]bool{}
+	for _, p := range s.Params {
+		bound[p.Name] = true
+	}
+	bound[s.Name] = true // self-reference is not a capture
+	collectBoundNamesStmts(s.Body, bound)
+	var free []string
+	collectFreeVarsStmts(s.Body, bound, map[string]bool{}, &free)
+	var captures []string
+	for _, name := range free {
+		t, ok := c.Env.Lookup(name)
+		if !ok {
+			continue
+		}
+		if fft, ok := t.(*FuncType); ok && !fft.Closure {
+			continue
+		}
+		switch t.(type) {
+		case *ClassType, *ModuleType:
+			continue
+		}
+		captures = append(captures, name)
+	}
+	s.Captures = captures
+	s.IsClosure = true
+
+	// Check the body.
+	prevRet := c.currentReturnType
+	prevYield := c.currentYieldType
+	c.currentReturnType = retType
+	c.currentYieldType = nil
+	c.Env.Push()
+	for i, p := range s.Params {
+		c.Env.Define(p.Name, paramTypes[i])
+	}
+	for _, stmt := range s.Body {
+		if err := c.checkStmt(stmt); err != nil {
+			c.Env.Pop()
+			c.currentReturnType = prevRet
+			c.currentYieldType = prevYield
+			return err
+		}
+	}
+	c.Env.Pop()
+	c.currentReturnType = prevRet
+	c.currentYieldType = prevYield
+	return nil
+}
+
 func (c *Checker) checkFuncDef(s *parser.FuncDef) error {
 	// Extern functions have no body — their signature was already validated in
 	// registerFuncSignature, which also enforces the marshallable type set.
 	if s.Extern {
 		return nil
+	}
+
+	// A `def` encountered while already inside a function body is a nested
+	// function — a first-class closure, not a statically-dispatched symbol.
+	if c.currentReturnType != nil && !s.IsGenerator {
+		return c.checkNestedFuncDef(s)
 	}
 
 	// Reuse the FuncType already registered by registerFuncSignature so that
@@ -1267,6 +1498,14 @@ func (c *Checker) checkReturnStmt(s *parser.ReturnStmt) error {
 		return nil
 	}
 
+	// Bias toward the declared return type so ambiguous literals (empty
+	// list / map / set) can resolve from the function's return annotation.
+	if c.currentReturnType != nil {
+		prev := c.typeHint
+		c.typeHint = c.currentReturnType
+		defer func() { c.typeHint = prev }()
+	}
+
 	valType, err := c.checkExpr(s.Value)
 	if err != nil {
 		return err
@@ -1318,6 +1557,8 @@ func (c *Checker) checkExpr(expr parser.Expr) (Type, error) {
 		t, err = c.checkMapLit(e)
 	case *parser.TupleLit:
 		t, err = c.checkTupleLit(e)
+	case *parser.LambdaExpr:
+		t, err = c.checkLambdaExpr(e)
 	default:
 		return nil, fmt.Errorf("unknown expression type: %T", expr)
 	}
@@ -1327,6 +1568,132 @@ func (c *Checker) checkExpr(expr parser.Expr) (Type, error) {
 	}
 	expr.SetResolvedType(t)
 	return t, nil
+}
+
+// collectFreeVars appends, in first-occurrence order, the names referenced in
+// e that are not in `bound` (and not already in `seen`). Used for closure
+// capture analysis.
+func collectFreeVars(e parser.Expr, bound map[string]bool, seen map[string]bool, out *[]string) {
+	switch x := e.(type) {
+	case *parser.IdentExpr:
+		if !bound[x.Name] && !seen[x.Name] {
+			seen[x.Name] = true
+			*out = append(*out, x.Name)
+		}
+	case *parser.BinaryExpr:
+		collectFreeVars(x.Left, bound, seen, out)
+		collectFreeVars(x.Right, bound, seen, out)
+	case *parser.UnaryExpr:
+		collectFreeVars(x.Operand, bound, seen, out)
+	case *parser.CallExpr:
+		collectFreeVars(x.Func, bound, seen, out)
+		for _, a := range x.Args {
+			collectFreeVars(a, bound, seen, out)
+		}
+		for _, kw := range x.Kwargs {
+			collectFreeVars(kw.Value, bound, seen, out)
+		}
+	case *parser.IndexExpr:
+		collectFreeVars(x.Object, bound, seen, out)
+		collectFreeVars(x.Index, bound, seen, out)
+	case *parser.SliceExpr:
+		collectFreeVars(x.Object, bound, seen, out)
+		if x.Low != nil {
+			collectFreeVars(x.Low, bound, seen, out)
+		}
+		if x.High != nil {
+			collectFreeVars(x.High, bound, seen, out)
+		}
+		if x.Step != nil {
+			collectFreeVars(x.Step, bound, seen, out)
+		}
+	case *parser.AttrExpr:
+		collectFreeVars(x.Object, bound, seen, out)
+	case *parser.ListLit:
+		for _, el := range x.Elements {
+			collectFreeVars(el, bound, seen, out)
+		}
+	case *parser.SetLit:
+		for _, el := range x.Elements {
+			collectFreeVars(el, bound, seen, out)
+		}
+	case *parser.TupleLit:
+		for _, el := range x.Elements {
+			collectFreeVars(el, bound, seen, out)
+		}
+	case *parser.MapLit:
+		for _, k := range x.Keys {
+			collectFreeVars(k, bound, seen, out)
+		}
+		for _, v := range x.Values {
+			collectFreeVars(v, bound, seen, out)
+		}
+	case *parser.LambdaExpr:
+		inner := map[string]bool{}
+		for k, v := range bound {
+			inner[k] = v
+		}
+		for _, p := range x.Params {
+			inner[p] = true
+		}
+		collectFreeVars(x.Body, inner, seen, out)
+	}
+}
+
+func (c *Checker) checkLambdaExpr(e *parser.LambdaExpr) (Type, error) {
+	hint, ok := c.typeHint.(*FuncType)
+	if !ok {
+		return nil, fmt.Errorf("%d:%d: cannot infer lambda parameter types — annotate the target with Callable[[...], R]", e.Pos.Line, e.Pos.Col)
+	}
+	if len(hint.Params) != len(e.Params) {
+		return nil, fmt.Errorf("%d:%d: lambda takes %d parameters but Callable type expects %d", e.Pos.Line, e.Pos.Col, len(e.Params), len(hint.Params))
+	}
+
+	// Capture analysis: free vars in the body that resolve to runtime values
+	// (locals or closure-valued names), excluding named-function / class /
+	// module symbols, which codegen references directly.
+	bound := map[string]bool{}
+	for _, p := range e.Params {
+		bound[p] = true
+	}
+	var free []string
+	collectFreeVars(e.Body, bound, map[string]bool{}, &free)
+	var captures []string
+	for _, name := range free {
+		t, ok := c.Env.Lookup(name)
+		if !ok {
+			continue
+		}
+		if ft, ok := t.(*FuncType); ok && !ft.Closure {
+			continue
+		}
+		switch t.(type) {
+		case *ClassType, *ModuleType:
+			continue
+		}
+		captures = append(captures, name)
+	}
+	e.Captures = captures
+
+	// Type-check the body with params bound and the return type hinted.
+	c.Env.Push()
+	for i, p := range e.Params {
+		c.Env.Define(p, hint.Params[i])
+	}
+	prev := c.typeHint
+	c.typeHint = hint.Return
+	bodyType, berr := c.checkExpr(e.Body)
+	c.typeHint = prev
+	c.Env.Pop()
+	if berr != nil {
+		return nil, berr
+	}
+	if _, isNone := hint.Return.(*NoneType); !isNone {
+		if !IsAssignable(bodyType, hint.Return) {
+			return nil, fmt.Errorf("%d:%d: lambda body has type %s, expected %s", e.Pos.Line, e.Pos.Col, bodyType, hint.Return)
+		}
+	}
+	return &FuncType{Params: hint.Params, Return: hint.Return, Closure: true}, nil
 }
 
 func (c *Checker) checkIdentExpr(e *parser.IdentExpr) (Type, error) {
@@ -1345,6 +1712,35 @@ func (c *Checker) checkBinaryExpr(e *parser.BinaryExpr) (Type, error) {
 	rightType, err := c.checkExpr(e.Right)
 	if err != nil {
 		return nil, err
+	}
+
+	// Membership tests: `x in container` / `x not in container`. The right
+	// operand is the container; the left is the element (or substring for
+	// str). Handled before instance dispatch so instances can be members.
+	if e.Op == "in" || e.Op == "not in" {
+		switch rt := rightType.(type) {
+		case *StrType:
+			if _, ok := leftType.(*StrType); !ok {
+				return nil, fmt.Errorf("%d:%d: 'in <str>' requires str on the left, got %s", e.Pos.Line, e.Pos.Col, leftType)
+			}
+			return &BoolType{}, nil
+		case *ListType:
+			if !IsAssignable(leftType, rt.Elem) {
+				return nil, fmt.Errorf("%d:%d: cannot test %s in list[%s]", e.Pos.Line, e.Pos.Col, leftType, rt.Elem)
+			}
+			return &BoolType{}, nil
+		case *SetType:
+			if !IsAssignable(leftType, rt.Elem) {
+				return nil, fmt.Errorf("%d:%d: cannot test %s in set[%s]", e.Pos.Line, e.Pos.Col, leftType, rt.Elem)
+			}
+			return &BoolType{}, nil
+		case *MapType:
+			if !IsAssignable(leftType, rt.Key) {
+				return nil, fmt.Errorf("%d:%d: cannot test %s in dict key %s", e.Pos.Line, e.Pos.Col, leftType, rt.Key)
+			}
+			return &BoolType{}, nil
+		}
+		return nil, fmt.Errorf("%d:%d: argument after 'in' must be a str, list, set, or dict, got %s", e.Pos.Line, e.Pos.Col, rightType)
 	}
 
 	// Operator overloading: if left operand is a class instance, dispatch to
@@ -1375,7 +1771,7 @@ func (c *Checker) checkBinaryExpr(e *parser.BinaryExpr) (Type, error) {
 		// int+int, float+float, str+str
 		if leftType.Equals(rightType) {
 			switch leftType.(type) {
-			case *IntType, *FloatType, *StrType:
+			case *IntType, *FloatType, *StrType, *BytesType, *BytearrayType:
 				return leftType, nil
 			}
 		}
@@ -1408,7 +1804,7 @@ func (c *Checker) checkBinaryExpr(e *parser.BinaryExpr) (Type, error) {
 	case "<", ">", "<=", ">=":
 		if leftType.Equals(rightType) {
 			switch leftType.(type) {
-			case *IntType, *FloatType, *StrType:
+			case *IntType, *FloatType, *StrType, *BytesType, *BytearrayType:
 				return &BoolType{}, nil
 			}
 		}
@@ -1632,6 +2028,46 @@ func (c *Checker) checkCallExpr(e *parser.CallExpr) (Type, error) {
 				return &BytearrayType{}, nil
 			}
 			return nil, fmt.Errorf("%d:%d: cannot convert %s to bytearray", e.Pos.Line, e.Pos.Col, argType)
+
+		case "any_int", "any_float", "any_str", "any_bool",
+			"any_bytes", "any_list", "any_dict",
+			"any_tag", "any_is_none":
+			if len(e.Args) != 1 {
+				return nil, fmt.Errorf("%d:%d: %s() takes exactly 1 argument", e.Pos.Line, e.Pos.Col, ident.Name)
+			}
+			argType, err := c.checkExpr(e.Args[0])
+			if err != nil {
+				return nil, err
+			}
+			if _, ok := argType.(*AnyType); !ok {
+				return nil, fmt.Errorf("%d:%d: %s() argument must be Any, got %s", e.Pos.Line, e.Pos.Col, ident.Name, argType)
+			}
+			switch ident.Name {
+			case "any_int":
+				return &IntType{}, nil
+			case "any_float":
+				return &FloatType{}, nil
+			case "any_str":
+				return &StrType{}, nil
+			case "any_bool":
+				return &BoolType{}, nil
+			case "any_bytes":
+				return &BytesType{}, nil
+			case "any_list":
+				return &ListType{Elem: &AnyType{}}, nil
+			case "any_dict":
+				return &MapType{Key: &StrType{}, Value: &AnyType{}}, nil
+			case "any_tag":
+				return &IntType{}, nil
+			case "any_is_none":
+				return &BoolType{}, nil
+			}
+
+		case "any_none":
+			if len(e.Args) != 0 {
+				return nil, fmt.Errorf("%d:%d: any_none() takes no arguments", e.Pos.Line, e.Pos.Col)
+			}
+			return &AnyType{}, nil
 		}
 	}
 
@@ -1697,7 +2133,24 @@ func (c *Checker) matchCallArgs(ft *FuncType, e *parser.CallExpr, who string) er
 	// Process positional args (and *expr unpacks).
 	posIdx := 0
 	for i, arg := range e.Args {
+		// Bias the arg's check toward the expected param type so empty
+		// literals like `{}` / `[]` resolve in argument position. Skip for
+		// *unpack — its expression is independently typed and we don't want
+		// hint propagation to mask a real type error.
+		var hint Type
+		if !e.IsArgStar(i) {
+			if posIdx < kwOnly {
+				hint = ft.Params[posIdx]
+			} else if ft.VarArgsElem != nil {
+				hint = ft.VarArgsElem
+			}
+		}
+		prevHint := c.typeHint
+		if hint != nil {
+			c.typeHint = hint
+		}
 		argType, err := c.checkExpr(arg)
+		c.typeHint = prevHint
 		if err != nil {
 			return err
 		}
@@ -1753,7 +2206,27 @@ func (c *Checker) matchCallArgs(ft *FuncType, e *parser.CallExpr, who string) er
 	// Process keyword args and **expr unpacks.
 	hasDStar := false
 	for _, kw := range e.Kwargs {
+		// Bias the value check toward the matched param type (or **kwargs
+		// element type) so empty literals resolve in kwarg position. Skip
+		// for **unpack — handled below from the value's own type.
+		var hint Type
+		if !kw.IsDStar {
+			for i := 0; i < nNamed; i++ {
+				if i < len(ft.ParamNames) && ft.ParamNames[i] == kw.Name {
+					hint = ft.Params[i]
+					break
+				}
+			}
+			if hint == nil && ft.KwargsElem != nil {
+				hint = ft.KwargsElem
+			}
+		}
+		prevHint := c.typeHint
+		if hint != nil {
+			c.typeHint = hint
+		}
 		valType, err := c.checkExpr(kw.Value)
+		c.typeHint = prevHint
 		if err != nil {
 			return err
 		}
@@ -1829,13 +2302,26 @@ func (c *Checker) matchCallArgs(ft *FuncType, e *parser.CallExpr, who string) er
 
 // isBuiltinName returns true for names we treat as built-in functions in
 // checkCallExpr. Builtins receive only positional args.
+// AnyBuiltinName reports whether `name` is one of the Any-related builtins
+// emitted directly to spy_any_* runtime calls by codegen. Kept exported so
+// codegen can share the list without duplicating it.
+func AnyBuiltinName(name string) bool {
+	switch name {
+	case "any_int", "any_float", "any_str", "any_bool",
+		"any_bytes", "any_list", "any_dict",
+		"any_tag", "any_is_none", "any_none":
+		return true
+	}
+	return false
+}
+
 func isBuiltinName(name string) bool {
 	switch name {
 	case "isinstance", "print", "len", "range", "next",
 		"int", "float", "str", "bytes", "bytearray":
 		return true
 	}
-	return false
+	return AnyBuiltinName(name)
 }
 
 func (c *Checker) checkIndexExpr(e *parser.IndexExpr) (Type, error) {
@@ -1969,21 +2455,63 @@ func (c *Checker) checkAttrExpr(e *parser.AttrExpr) (Type, error) {
 
 	switch t := objType.(type) {
 	case *ListType:
-		if e.Attr == "append" {
-			// Returns a callable that takes one element and returns None
+		switch e.Attr {
+		case "append":
 			return &FuncType{Params: []Type{t.Elem}, Return: &NoneType{}}, nil
+		case "pop":
+			return &FuncType{Params: []Type{}, Return: t.Elem}, nil
+		case "insert":
+			return &FuncType{Params: []Type{&IntType{}, t.Elem}, Return: &NoneType{}}, nil
+		case "remove":
+			return &FuncType{Params: []Type{t.Elem}, Return: &NoneType{}}, nil
+		case "index", "count":
+			return &FuncType{Params: []Type{t.Elem}, Return: &IntType{}}, nil
+		case "reverse", "clear", "sort":
+			return &FuncType{Params: []Type{}, Return: &NoneType{}}, nil
+		case "extend":
+			return &FuncType{Params: []Type{&ListType{Elem: t.Elem}}, Return: &NoneType{}}, nil
 		}
 	case *SetType:
 		switch e.Attr {
 		case "add", "discard":
 			return &FuncType{Params: []Type{t.Elem}, Return: &NoneType{}}, nil
-		case "contains":
-			return &FuncType{Params: []Type{t.Elem}, Return: &BoolType{}}, nil
+		}
+	case *MapType:
+		switch e.Attr {
+		case "keys":
+			return &FuncType{Params: []Type{}, Return: &ListType{Elem: t.Key}}, nil
+		case "values":
+			return &FuncType{Params: []Type{}, Return: &ListType{Elem: t.Value}}, nil
+		case "get":
+			return &FuncType{Params: []Type{t.Key, t.Value}, Return: t.Value}, nil
+		case "update":
+			return &FuncType{Params: []Type{&MapType{Key: t.Key, Value: t.Value}}, Return: &NoneType{}}, nil
+		case "clear":
+			return &FuncType{Params: []Type{}, Return: &NoneType{}}, nil
 		}
 	case *BytearrayType:
 		_ = t
 		if e.Attr == "append" {
 			return &FuncType{Params: []Type{&IntType{}}, Return: &NoneType{}}, nil
+		}
+	case *StrType:
+		switch e.Attr {
+		case "upper", "lower", "capitalize", "strip", "lstrip", "rstrip":
+			return &FuncType{Params: []Type{}, Return: &StrType{}}, nil
+		case "isdigit", "isalpha", "isspace", "isupper", "islower":
+			return &FuncType{Params: []Type{}, Return: &BoolType{}}, nil
+		case "startswith", "endswith":
+			return &FuncType{Params: []Type{&StrType{}}, Return: &BoolType{}}, nil
+		case "find", "rfind", "count":
+			return &FuncType{Params: []Type{&StrType{}}, Return: &IntType{}}, nil
+		case "replace":
+			return &FuncType{Params: []Type{&StrType{}, &StrType{}}, Return: &StrType{}}, nil
+		case "zfill":
+			return &FuncType{Params: []Type{&IntType{}}, Return: &StrType{}}, nil
+		case "split":
+			return &FuncType{Params: []Type{&StrType{}}, Return: &ListType{Elem: &StrType{}}}, nil
+		case "join":
+			return &FuncType{Params: []Type{&ListType{Elem: &StrType{}}}, Return: &StrType{}}, nil
 		}
 	case *ModuleType:
 		exp, ok := t.Exports[e.Attr]
@@ -2020,6 +2548,19 @@ func findInitSig(ct *ClassType) *FuncType {
 }
 
 func (c *Checker) checkListLit(e *parser.ListLit) (Type, error) {
+	// If the enclosing annotation is list[Any], type-check elements without
+	// requiring homogeneity — every element is independently legal and will
+	// be boxed at codegen time.
+	if lt, ok := c.typeHint.(*ListType); ok {
+		if _, isAny := lt.Elem.(*AnyType); isAny {
+			for _, el := range e.Elements {
+				if _, err := c.checkExpr(el); err != nil {
+					return nil, err
+				}
+			}
+			return &ListType{Elem: &AnyType{}}, nil
+		}
+	}
 	if len(e.Elements) == 0 {
 		// Accept when an enclosing annotation tells us the element type.
 		if lt, ok := c.typeHint.(*ListType); ok {
@@ -2028,15 +2569,39 @@ func (c *Checker) checkListLit(e *parser.ListLit) (Type, error) {
 		return nil, fmt.Errorf("%d:%d: cannot infer type of empty list literal, use type annotation", e.Pos.Line, e.Pos.Col)
 	}
 
-	elemType, err := c.checkExpr(e.Elements[0])
+	// When an enclosing annotation gives the element type, bias each element's
+	// check toward it (needed for lambdas, which require a contextual type).
+	var elemHint Type
+	if lt, ok := c.typeHint.(*ListType); ok {
+		elemHint = lt.Elem
+	}
+	checkElem := func(el parser.Expr) (Type, error) {
+		prev := c.typeHint
+		c.typeHint = elemHint
+		t, err := c.checkExpr(el)
+		c.typeHint = prev
+		return t, err
+	}
+
+	elemType, err := checkElem(e.Elements[0])
 	if err != nil {
 		return nil, err
 	}
+	if elemHint != nil {
+		elemType = elemHint
+	}
 
 	for i := 1; i < len(e.Elements); i++ {
-		et, err := c.checkExpr(e.Elements[i])
+		et, err := checkElem(e.Elements[i])
 		if err != nil {
 			return nil, err
+		}
+		if elemHint != nil {
+			// Hint-driven: each element must be assignable to the declared elem.
+			if !IsAssignable(et, elemHint) {
+				return nil, fmt.Errorf("%d:%d: list element %d has type %s, expected %s", e.Pos.Line, e.Pos.Col, i, et, elemHint)
+			}
+			continue
 		}
 		// Widen to a common type for instance types.
 		if merged, ok := mergeInstanceTypes(elemType, et); ok {
@@ -2103,7 +2668,43 @@ func (c *Checker) checkSetLit(e *parser.SetLit) (Type, error) {
 }
 
 func (c *Checker) checkMapLit(e *parser.MapLit) (Type, error) {
+	// If the enclosing annotation is map[K, Any], allow heterogeneous values;
+	// each value is type-checked individually and will be boxed at codegen.
+	if mt, ok := c.typeHint.(*MapType); ok {
+		if _, isAny := mt.Value.(*AnyType); isAny {
+			if len(e.Keys) == 0 {
+				return mt, nil
+			}
+			keyType, err := c.checkExpr(e.Keys[0])
+			if err != nil {
+				return nil, err
+			}
+			if !keyType.Equals(mt.Key) {
+				return nil, fmt.Errorf("%d:%d: map keys must all be %s, got %s", e.Pos.Line, e.Pos.Col, mt.Key, keyType)
+			}
+			if _, err := c.checkExpr(e.Values[0]); err != nil {
+				return nil, err
+			}
+			for i := 1; i < len(e.Keys); i++ {
+				kt, err := c.checkExpr(e.Keys[i])
+				if err != nil {
+					return nil, err
+				}
+				if !keyType.Equals(kt) {
+					return nil, fmt.Errorf("%d:%d: map keys must all be %s, got %s", e.Pos.Line, e.Pos.Col, keyType, kt)
+				}
+				if _, err := c.checkExpr(e.Values[i]); err != nil {
+					return nil, err
+				}
+			}
+			return &MapType{Key: keyType, Value: &AnyType{}}, nil
+		}
+	}
 	if len(e.Keys) == 0 {
+		// Accept when an enclosing annotation tells us the map type.
+		if mt, ok := c.typeHint.(*MapType); ok {
+			return mt, nil
+		}
 		return nil, fmt.Errorf("%d:%d: cannot infer type of empty map literal, use type annotation", e.Pos.Line, e.Pos.Col)
 	}
 
@@ -2198,6 +2799,8 @@ func (c *Checker) resolveTypeAnnotation(ann *parser.TypeAnnotation) Type {
 		return &BytearrayType{}
 	case "None":
 		return &NoneType{}
+	case "Any":
+		return &AnyType{}
 	case "list":
 		if len(ann.Params) != 1 {
 			return nil
@@ -2248,6 +2851,23 @@ func (c *Checker) resolveTypeAnnotation(ann *parser.TypeAnnotation) Type {
 			elems[i] = et
 		}
 		return &TupleType{Elements: elems}
+	case "Callable":
+		params := make([]Type, len(ann.CallableArgs))
+		for i, a := range ann.CallableArgs {
+			pt := c.resolveTypeAnnotation(a)
+			if pt == nil {
+				return nil
+			}
+			params[i] = pt
+		}
+		var ret Type = &NoneType{}
+		if ann.CallableRet != nil {
+			ret = c.resolveTypeAnnotation(ann.CallableRet)
+			if ret == nil {
+				return nil
+			}
+		}
+		return &FuncType{Params: params, Return: ret, Closure: true}
 	}
 	// Fall back to class lookup.
 	if ct, ok := c.Env.LookupClass(ann.Name); ok {

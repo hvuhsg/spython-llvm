@@ -1,0 +1,22 @@
+import fnmatch
+
+print(fnmatch.fnmatch("foo.txt", "*.txt"))
+print(fnmatch.fnmatch("foo.txt", "*.csv"))
+print(fnmatch.fnmatch("foo.txt", "foo.???"))
+print(fnmatch.fnmatch("foo.txt", "f?o.txt"))
+print(fnmatch.fnmatch("data1.log", "data[0-9].log"))
+print(fnmatch.fnmatch("dataX.log", "data[0-9].log"))
+print(fnmatch.fnmatch("dataX.log", "data[!0-9].log"))
+print(fnmatch.fnmatch("abc", "a*c"))
+print(fnmatch.fnmatch("ac", "a*c"))
+print(fnmatch.fnmatch("axxxc", "a*c"))
+print(fnmatch.fnmatch("a", "a*"))
+print(fnmatch.fnmatch("", "*"))
+print(fnmatch.fnmatchcase("Foo.TXT", "*.txt"))
+print(fnmatch.fnmatch("file]", "file[]]"))
+print(fnmatch.fnmatch("a[b", "a[b"))
+names: list[str] = ["a.py", "b.txt", "c.py", "d.md"]
+res: list[str] = fnmatch.filter(names, "*.py")
+print(len(res))
+print(res[0])
+print(res[1])

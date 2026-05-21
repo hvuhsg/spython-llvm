@@ -1,3 +1,5 @@
+// spython-link: -lpthread
+//
 // stdlib/socket.c — POSIX-backed socket primitives for stdlib/socket.spy.
 // Scope: IPv4 (AF_INET) with TCP (SOCK_STREAM) or UDP (SOCK_DGRAM).
 // Both client (connect) and server (bind/listen/accept) sides are
@@ -13,8 +15,11 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <pthread.h>
+#include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/in.h>
@@ -39,6 +44,11 @@ static int spy_socket_last_err = 0;
 // merely a classification fidelity issue, not a correctness one.
 #define SPY_SOCKET_FD_CAP 4096
 static unsigned char spy_socket_has_timeout[SPY_SOCKET_FD_CAP];
+// Recorded settimeout() value in seconds, parallel to has_timeout. Read
+// by connect() when has_timeout is set so the connect phase honours the
+// same deadline as recv/send. SO_RCVTIMEO / SO_SNDTIMEO themselves do
+// not affect connect() — that's why we keep this slot.
+static double spy_socket_timeout_secs[SPY_SOCKET_FD_CAP];
 
 // Stash for accept/recvfrom/getsockname/getpeername peer addresses.
 // The spython side reads them via _last_peer_host()/_last_peer_port()
@@ -165,11 +175,80 @@ int64_t spy_socket__connect(int64_t fd, const char *host_spy, int64_t port) {
     addr.sin_port = htons((uint16_t)port);
     if (spy_socket_resolve_inet(host, &addr) < 0) return -1;
 
-    int rc = connect((int)fd, (struct sockaddr *)&addr, sizeof(addr));
-    if (rc < 0) {
-        spy_socket_record_with_timeout_check((int)fd);
+    int ifd = (int)fd;
+    int has_to = (ifd >= 0 && ifd < SPY_SOCKET_FD_CAP && spy_socket_has_timeout[ifd]);
+    if (!has_to) {
+        // No timeout configured: keep the historical fully-blocking
+        // semantics. SO_RCVTIMEO / SO_SNDTIMEO do not affect connect, so
+        // a blocking connect can still hang here — callers that need a
+        // bounded connect must call settimeout() before connect().
+        int rc = connect(ifd, (struct sockaddr *)&addr, sizeof(addr));
+        if (rc < 0) {
+            spy_socket_record_with_timeout_check(ifd);
+            return -1;
+        }
+        spy_socket_last_err = 0;
+        return 0;
+    }
+
+    // Timeout-bounded connect. Switch to non-blocking, start the
+    // connection, then select() until it completes or the deadline
+    // fires. Restore the original blocking flag at the end so subsequent
+    // recv/send keep using SO_RCVTIMEO/SO_SNDTIMEO.
+    int orig_flags = fcntl(ifd, F_GETFL, 0);
+    if (orig_flags < 0) {
+        spy_socket_record_errno();
         return -1;
     }
+    if (fcntl(ifd, F_SETFL, orig_flags | O_NONBLOCK) < 0) {
+        spy_socket_record_errno();
+        return -1;
+    }
+
+    int rc = connect(ifd, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc < 0 && errno != EINPROGRESS) {
+        spy_socket_record_with_timeout_check(ifd);
+        fcntl(ifd, F_SETFL, orig_flags);
+        return -1;
+    }
+
+    if (rc != 0) {
+        // EINPROGRESS: wait for writability with our deadline.
+        double secs = spy_socket_timeout_secs[ifd];
+        struct timeval tv;
+        tv.tv_sec = (time_t)secs;
+        tv.tv_usec = (suseconds_t)((secs - (double)tv.tv_sec) * 1000000.0);
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(ifd, &wfds);
+        int sel = select(ifd + 1, NULL, &wfds, NULL, &tv);
+        if (sel == 0) {
+            spy_socket_last_err = 3; // timeout
+            fcntl(ifd, F_SETFL, orig_flags);
+            return -1;
+        }
+        if (sel < 0) {
+            spy_socket_record_errno();
+            fcntl(ifd, F_SETFL, orig_flags);
+            return -1;
+        }
+        // Connection finished — check SO_ERROR to find out how.
+        int soerr = 0;
+        socklen_t slen = sizeof(soerr);
+        if (getsockopt(ifd, SOL_SOCKET, SO_ERROR, &soerr, &slen) < 0) {
+            spy_socket_record_errno();
+            fcntl(ifd, F_SETFL, orig_flags);
+            return -1;
+        }
+        if (soerr != 0) {
+            errno = soerr;
+            spy_socket_record_with_timeout_check(ifd);
+            fcntl(ifd, F_SETFL, orig_flags);
+            return -1;
+        }
+    }
+
+    fcntl(ifd, F_SETFL, orig_flags);
     spy_socket_last_err = 0;
     return 0;
 }
@@ -484,7 +563,9 @@ int64_t spy_socket__settimeout(int64_t fd, double seconds) {
     } else {
         // Blocking with timeout: clear O_NONBLOCK, install SO_RCVTIMEO /
         // SO_SNDTIMEO. Mark the fd so we report ETIMEDOUT/EAGAIN as
-        // TimeoutError rather than BlockingIOError.
+        // TimeoutError rather than BlockingIOError. Stash the seconds
+        // value so a subsequent connect() can apply the same deadline
+        // (SO_RCVTIMEO/SO_SNDTIMEO don't affect connect).
         f &= ~O_NONBLOCK;
         if (fcntl((int)fd, F_SETFL, f) < 0) {
             spy_socket_record_errno();
@@ -501,7 +582,10 @@ int64_t spy_socket__settimeout(int64_t fd, double seconds) {
             spy_socket_record_errno();
             return -1;
         }
-        if (fd >= 0 && fd < SPY_SOCKET_FD_CAP) spy_socket_has_timeout[(int)fd] = 1;
+        if (fd >= 0 && fd < SPY_SOCKET_FD_CAP) {
+            spy_socket_has_timeout[(int)fd] = 1;
+            spy_socket_timeout_secs[(int)fd] = seconds;
+        }
     }
 
     spy_socket_last_err = 0;
@@ -544,4 +628,130 @@ const char *spy_socket__gethostbyname(const char *host_spy) {
     }
     spy_socket_last_err = 0;
     return spy_str_new(out, (int64_t)strlen(out));
+}
+
+// Background DNS lookup with a deadline. getaddrinfo is blocking and
+// uncancellable from a single thread, so callers that need a bounded
+// resolver use this variant. We spawn a worker thread that runs
+// getaddrinfo, then poll for completion until the deadline. On timeout
+// the worker is detached and leaked — its eventual completion is
+// harmless since the cleanup path re-checks the abandoned flag before
+// touching the result struct.
+typedef struct {
+    char host[256];
+    char ip[INET_ADDRSTRLEN];
+    int  done;       // worker sets to 1 when finished
+    int  ok;         // 1 on success, 0 on failure
+    int  abandoned;  // main set to 1 after timeout; worker frees on exit
+    pthread_mutex_t mu;
+} DnsJob;
+
+static void *dns_worker(void *arg) {
+    DnsJob *j = (DnsJob*)arg;
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    int rc = getaddrinfo(j->host, NULL, &hints, &res);
+    int ok = 0;
+    if (rc == 0 && res != NULL) {
+        struct sockaddr_in *rin = (struct sockaddr_in *)res->ai_addr;
+        if (inet_ntop(AF_INET, &rin->sin_addr, j->ip, sizeof(j->ip)) != NULL) {
+            ok = 1;
+        }
+    }
+    if (res) freeaddrinfo(res);
+
+    pthread_mutex_lock(&j->mu);
+    j->ok = ok;
+    j->done = 1;
+    int abandoned = j->abandoned;
+    pthread_mutex_unlock(&j->mu);
+    if (abandoned) {
+        pthread_mutex_destroy(&j->mu);
+        free(j);
+    }
+    return NULL;
+}
+
+const char *spy_socket__gethostbyname_timeout(const char *host_spy, double seconds) {
+    char host[256];
+    if (spy_socket_str_to_c(host_spy, host, sizeof(host)) < 0) {
+        spy_socket_last_err = 2;
+        return spy_str_new("", 0);
+    }
+    if (seconds <= 0.0) {
+        // Negative / zero means "no deadline" — fall back to the plain
+        // synchronous version.
+        return spy_socket__gethostbyname(host_spy);
+    }
+
+    DnsJob *job = (DnsJob*)calloc(1, sizeof(DnsJob));
+    if (!job) {
+        spy_socket_last_err = 2;
+        return spy_str_new("", 0);
+    }
+    memcpy(job->host, host, sizeof(host));
+    pthread_mutex_init(&job->mu, NULL);
+
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, dns_worker, job) != 0) {
+        pthread_mutex_destroy(&job->mu);
+        free(job);
+        spy_socket_last_err = 2;
+        return spy_str_new("", 0);
+    }
+    pthread_detach(tid);
+
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    int timed_out = 0;
+    int got_ok = 0;
+    char ip_copy[INET_ADDRSTRLEN] = {0};
+    while (1) {
+        pthread_mutex_lock(&job->mu);
+        int done = job->done;
+        if (done) {
+            got_ok = job->ok;
+            if (got_ok) memcpy(ip_copy, job->ip, sizeof(ip_copy));
+        }
+        pthread_mutex_unlock(&job->mu);
+        if (done) break;
+
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (double)(now.tv_sec - start.tv_sec)
+                       + (double)(now.tv_nsec - start.tv_nsec) / 1e9;
+        if (elapsed >= seconds) {
+            timed_out = 1;
+            break;
+        }
+        // 10ms poll interval — coarse enough to be cheap, fine enough
+        // that timeouts honour the requested deadline within ~10ms.
+        struct timespec slp = {0, 10 * 1000 * 1000};
+        nanosleep(&slp, NULL);
+    }
+
+    if (timed_out) {
+        pthread_mutex_lock(&job->mu);
+        job->abandoned = 1;
+        int already_done = job->done;
+        pthread_mutex_unlock(&job->mu);
+        if (already_done) {
+            pthread_mutex_destroy(&job->mu);
+            free(job);
+        }
+        // Otherwise the worker frees the job when it eventually returns.
+        spy_socket_last_err = 3; // timeout
+        return spy_str_new("", 0);
+    }
+
+    pthread_mutex_destroy(&job->mu);
+    free(job);
+    if (!got_ok) {
+        spy_socket_last_err = 8;
+        return spy_str_new("", 0);
+    }
+    spy_socket_last_err = 0;
+    return spy_str_new(ip_copy, (int64_t)strlen(ip_copy));
 }

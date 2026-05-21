@@ -87,6 +87,30 @@ type Generator struct {
 	// emitYieldStmt consults it to find the state pointer and resume
 	// label table.
 	genCtx *genEmitCtx
+
+	// Closure (lambda / first-class function) codegen state. Each lambda is
+	// lowered to a top-level function taking the closure environment as an
+	// implicit first i8* argument. closureID assigns unique names;
+	// closureTypeDefs accumulates the `%clo.N = type {...}` lines; closureJobs
+	// queues the function bodies to emit after the main module body.
+	closureID       int
+	closureTypeDefs []string
+	closureJobs     []closureJob
+}
+
+// closureJob records everything needed to emit a closure's top-level function
+// after the enclosing module body has been generated. Exactly one of lam / fd
+// is set: lam for a lambda (single-expression body), fd for a nested def
+// (statement body).
+type closureJob struct {
+	id        int
+	lam       *parser.LambdaExpr
+	fd        *parser.FuncDef
+	ft        *types.FuncType
+	captures  []string
+	capTypes  []types.Type
+	mod       string
+	modConsts map[string]varInfo
 }
 
 type varInfo struct {
@@ -306,6 +330,11 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 	g.endFunc(oldBody, oldAllocas)
 	g.emitLine("}")
 
+	// Emit lambda function bodies + closure environment type definitions.
+	if err := g.drainClosures(); err != nil {
+		return "", err
+	}
+
 	return g.buf.String(), nil
 }
 
@@ -406,7 +435,7 @@ func (g *Generator) zeroValue(t types.Type) string {
 		return "0.0"
 	case *types.BoolType:
 		return "0"
-	case *types.StrType, *types.ListType, *types.MapType, *types.SetType, *types.IteratorType:
+	case *types.StrType, *types.BytesType, *types.BytearrayType, *types.ListType, *types.MapType, *types.SetType, *types.IteratorType, *types.AnyType:
 		return "null"
 	case *types.NoneType:
 		return "zeroinitializer"
@@ -478,17 +507,47 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare void @spy_print_bool(i1)")
 	g.emitLine("declare void @spy_print_str(i8*)")
 	g.emitLine("declare void @spy_print_newline()")
+	g.emitLine("declare i8* @spy_gc_alloc(i64)")
 	g.emitLine("declare i8* @spy_str_new(i8*, i64)")
 	g.emitLine("declare i8* @spy_str_concat(i8*, i8*)")
 	g.emitLine("declare i1 @spy_str_eq(i8*, i8*)")
 	g.emitLine("declare i8* @spy_str_index(i8*, i64)")
 	g.emitLine("declare i64 @spy_str_len(i8*)")
 	g.emitLine("declare i64 @spy_str_compare(i8*, i8*)")
+	g.emitLine("declare i8* @spy_str_upper(i8*)")
+	g.emitLine("declare i8* @spy_str_lower(i8*)")
+	g.emitLine("declare i8* @spy_str_capitalize(i8*)")
+	g.emitLine("declare i8* @spy_str_strip(i8*)")
+	g.emitLine("declare i8* @spy_str_lstrip(i8*)")
+	g.emitLine("declare i8* @spy_str_rstrip(i8*)")
+	g.emitLine("declare i1 @spy_str_startswith(i8*, i8*)")
+	g.emitLine("declare i1 @spy_str_endswith(i8*, i8*)")
+	g.emitLine("declare i64 @spy_str_find(i8*, i8*)")
+	g.emitLine("declare i64 @spy_str_rfind(i8*, i8*)")
+	g.emitLine("declare i64 @spy_str_count(i8*, i8*)")
+	g.emitLine("declare i8* @spy_str_replace(i8*, i8*, i8*)")
+	g.emitLine("declare i8* @spy_str_zfill(i8*, i64)")
+	g.emitLine("declare i8* @spy_str_split(i8*, i8*)")
+	g.emitLine("declare i8* @spy_str_join(i8*, i8*)")
+	g.emitLine("declare i1 @spy_str_isdigit(i8*)")
+	g.emitLine("declare i1 @spy_str_isalpha(i8*)")
+	g.emitLine("declare i1 @spy_str_isspace(i8*)")
+	g.emitLine("declare i1 @spy_str_isupper(i8*)")
+	g.emitLine("declare i1 @spy_str_islower(i8*)")
 	g.emitLine("declare i8* @spy_list_new(i64)")
 	g.emitLine("declare void @spy_list_append(i8*, i8*)")
 	g.emitLine("declare i8* @spy_list_get(i8*, i64)")
 	g.emitLine("declare void @spy_list_set(i8*, i64, i8*)")
 	g.emitLine("declare i64 @spy_list_len(i8*)")
+	g.emitLine("declare i8* @spy_list_pop(i8*)")
+	g.emitLine("declare void @spy_list_insert(i8*, i64, i8*)")
+	g.emitLine("declare i64 @spy_list_index(i8*, i8*, i64)")
+	g.emitLine("declare i64 @spy_list_count_elem(i8*, i8*, i64)")
+	g.emitLine("declare void @spy_list_remove(i8*, i8*, i64)")
+	g.emitLine("declare void @spy_list_reverse(i8*)")
+	g.emitLine("declare void @spy_list_clear(i8*)")
+	g.emitLine("declare void @spy_list_extend(i8*, i8*)")
+	g.emitLine("declare void @spy_list_sort(i8*, i64)")
 	g.emitLine("declare i8* @spy_str_slice(i8*, i64, i64, i64, i64)")
 	g.emitLine("declare i8* @spy_bytes_slice(i8*, i64, i64, i64, i64)")
 	g.emitLine("declare i8* @spy_list_slice(i8*, i64, i64, i64, i64)")
@@ -499,6 +558,12 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare i1 @spy_map_contains(i8*, i8*)")
 	g.emitLine("declare i64 @spy_map_len(i8*)")
 	g.emitLine("declare void @spy_map_extend(i8*, i8*)")
+	g.emitLine("declare i8* @spy_map_keys(i8*)")
+	g.emitLine("declare i8* @spy_map_values(i8*)")
+	g.emitLine("declare i8* @spy_map_get_or(i8*, i8*, i8*)")
+	g.emitLine("declare void @spy_map_clear(i8*)")
+	g.emitLine("declare i64 @spy_map_next(i8*, i64)")
+	g.emitLine("declare i8* @spy_map_key_at(i8*, i64)")
 	g.emitLine("declare i8* @spy_set_new(i64, i64)")
 	g.emitLine("declare void @spy_set_add(i8*, i8*)")
 	g.emitLine("declare i1 @spy_set_contains(i8*, i8*)")
@@ -509,6 +574,8 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare i8* @spy_int_to_str(i64)")
 	g.emitLine("declare i8* @spy_float_to_str(double)")
 	g.emitLine("declare i8* @spy_bool_to_str(i1)")
+	g.emitLine("declare i64 @spy_str_to_int(i8*)")
+	g.emitLine("declare double @spy_str_to_float(i8*)")
 	g.emitLine("declare i64 @spy_int_pow(i64, i64)")
 	g.emitLine("declare double @llvm.pow.f64(double, double)")
 	g.emitLine("declare double @llvm.floor.f64(double)")
@@ -530,6 +597,25 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare void @spy_exc_clear()")
 	g.emitLine("declare void @spy_exc_throw(i8*)")
 	g.emitLine("declare void @spy_exc_rethrow()")
+	// Any (tagged value box).
+	g.emitLine("declare i8* @spy_any_none()")
+	g.emitLine("declare i8* @spy_any_box_int(i64)")
+	g.emitLine("declare i8* @spy_any_box_float(double)")
+	g.emitLine("declare i8* @spy_any_box_bool(i1)")
+	g.emitLine("declare i8* @spy_any_box_str(i8*)")
+	g.emitLine("declare i8* @spy_any_box_list(i8*)")
+	g.emitLine("declare i8* @spy_any_box_map(i8*)")
+	g.emitLine("declare i8* @spy_any_box_bytes(i8*)")
+	g.emitLine("declare i32 @spy_any_tag(i8*)")
+	g.emitLine("declare i1 @spy_any_is_none(i8*)")
+	g.emitLine("declare i64 @spy_any_unbox_int(i8*)")
+	g.emitLine("declare double @spy_any_unbox_float(i8*)")
+	g.emitLine("declare i1 @spy_any_unbox_bool(i8*)")
+	g.emitLine("declare i8* @spy_any_unbox_str(i8*)")
+	g.emitLine("declare i8* @spy_any_unbox_list(i8*)")
+	g.emitLine("declare i8* @spy_any_unbox_map(i8*)")
+	g.emitLine("declare i8* @spy_any_unbox_bytes(i8*)")
+	g.emitLine("declare i8* @spy_any_to_str(i8*)")
 }
 
 // emitExternDecl emits an LLVM `declare` for an @extern function. The symbol
@@ -613,6 +699,246 @@ func (g *Generator) emitFuncDef(fd *parser.FuncDef) error {
 	return nil
 }
 
+// closureFnPtrType returns the LLVM function-pointer type for a closure with
+// signature ft: `<ret> (i8*, <param types...>)*` (the i8* is the environment).
+func (g *Generator) closureFnPtrType(ft *types.FuncType) string {
+	parts := []string{"i8*"}
+	for _, p := range ft.Params {
+		parts = append(parts, g.llvmType(p))
+	}
+	return fmt.Sprintf("%s (%s)*", g.llvmType(ft.Return), strings.Join(parts, ", "))
+}
+
+// emitLambda emits the creation of a closure value: it allocates the
+// environment struct, stores the function pointer and captured values, and
+// queues the lambda's top-level function for later emission. Returns the
+// closure as an i8*.
+func (g *Generator) emitLambda(e *parser.LambdaExpr) (string, error) {
+	ft, ok := e.GetResolvedType().(*types.FuncType)
+	if !ok {
+		return "", fmt.Errorf("lambda has no resolved function type")
+	}
+	job := closureJob{
+		id: g.closureID, lam: e, ft: ft,
+		captures: append([]string{}, e.Captures...),
+		mod:      g.currentMod, modConsts: g.moduleConsts,
+	}
+	g.closureID++
+	return g.emitClosureValue(job)
+}
+
+// emitClosureValue allocates a closure environment, stores the function
+// pointer and captured values, queues the function body for emission, and
+// returns the closure as an i8*. The environment is an untyped heap block of
+// 8-byte slots: slot 0 is the function pointer, slots 1..n are the captures.
+// Byte offsets (rather than a named struct type) keep the IR free of any
+// type-ordering constraints; every captured scalar/pointer fits in 8 bytes.
+func (g *Generator) emitClosureValue(job closureJob) (string, error) {
+	job.capTypes = make([]types.Type, len(job.captures))
+	for i, name := range job.captures {
+		info, ok := g.vars[name]
+		if !ok {
+			return "", fmt.Errorf("closure captures %q which is not an in-scope local", name)
+		}
+		job.capTypes[i] = info.typ
+	}
+	g.closureJobs = append(g.closureJobs, job)
+
+	nslots := 1 + len(job.captures)
+	raw := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_gc_alloc(i64 %d)", raw, nslots*8))
+
+	fpp := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to i8**", fpp, raw))
+	fnPtrTy := g.closureFnPtrType(job.ft)
+	g.emitLine(fmt.Sprintf("  store i8* bitcast (%s @spy_lambda_%d to i8*), i8** %s", fnPtrTy, job.id, fpp))
+
+	for i, name := range job.captures {
+		info := g.vars[name]
+		ct := g.llvmType(job.capTypes[i])
+		cv := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", cv, ct, ct, info.llvmName))
+		slot := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = getelementptr i8, i8* %s, i64 %d", slot, raw, (i+1)*8))
+		slotT := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", slotT, slot, ct))
+		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", ct, cv, ct, slotT))
+	}
+	return raw, nil
+}
+
+// emitNestedFuncDef lowers a `def` nested in a function: it builds a closure
+// value (capturing free variables) and binds it to a local variable named
+// after the function.
+func (g *Generator) emitNestedFuncDef(s *parser.FuncDef) error {
+	ft := &types.FuncType{Closure: true, Return: g.getResolvedType(s)}
+	for _, p := range s.Params {
+		ft.Params = append(ft.Params, g.resolveTypeAnnotation(p.TypeAnn))
+	}
+	job := closureJob{
+		id: g.closureID, fd: s, ft: ft,
+		captures: append([]string{}, s.Captures...),
+		mod:      g.currentMod, modConsts: g.moduleConsts,
+	}
+	g.closureID++
+	val, err := g.emitClosureValue(job)
+	if err != nil {
+		return err
+	}
+	a := g.newTmp()
+	g.emitAlloca(a, "i8*")
+	g.emitLine(fmt.Sprintf("  store i8* %s, i8** %s", val, a))
+	g.vars[s.Name] = varInfo{llvmName: a, typ: ft}
+	return nil
+}
+
+// emitClosureCall lowers `f(args)` where f evaluates to a closure value.
+func (g *Generator) emitClosureCall(e *parser.CallExpr, ft *types.FuncType) (string, error) {
+	cloVal, err := g.emitExpr(e.Func)
+	if err != nil {
+		return "", err
+	}
+	// Load the function pointer from environment field 0.
+	fpp := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to i8**", fpp, cloVal))
+	fp := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i8*, i8** %s", fp, fpp))
+	fn := g.newTmp()
+	fnPtrTy := g.closureFnPtrType(ft)
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s", fn, fp, fnPtrTy))
+
+	argStrs := []string{fmt.Sprintf("i8* %s", cloVal)}
+	for i, a := range e.Args {
+		av, err := g.emitExpr(a)
+		if err != nil {
+			return "", err
+		}
+		at, _ := a.GetResolvedType().(types.Type)
+		if at != nil && i < len(ft.Params) {
+			av = g.castToType(av, at, ft.Params[i])
+		}
+		pllvm := "i8*"
+		if i < len(ft.Params) {
+			pllvm = g.llvmType(ft.Params[i])
+		}
+		argStrs = append(argStrs, fmt.Sprintf("%s %s", pllvm, av))
+	}
+
+	retLLVM := g.llvmType(ft.Return)
+	if _, isNone := ft.Return.(*types.NoneType); isNone || retLLVM == "void" {
+		g.emitLine(fmt.Sprintf("  call void %s(%s)", fn, strings.Join(argStrs, ", ")))
+		return "void", nil
+	}
+	r := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call %s %s(%s)", r, retLLVM, fn, strings.Join(argStrs, ", ")))
+	return r, nil
+}
+
+// emitClosureFunction emits the top-level function body for a queued lambda.
+func (g *Generator) emitClosureFunction(job closureJob) error {
+	ft := job.ft
+	retLLVM := g.llvmType(ft.Return)
+
+	// Parameter names come from the lambda or the nested def.
+	paramNames := make([]string, len(ft.Params))
+	if job.lam != nil {
+		copy(paramNames, job.lam.Params)
+	} else {
+		for i, p := range job.fd.Params {
+			paramNames[i] = p.Name
+		}
+	}
+
+	params := []string{"i8* %clo"}
+	for i, pt := range ft.Params {
+		params = append(params, fmt.Sprintf("%s %%p%d", g.llvmType(pt), i))
+	}
+	g.emitLine(fmt.Sprintf("define %s @spy_lambda_%d(%s) {", retLLVM, job.id, strings.Join(params, ", ")))
+	g.emitLine("entry:")
+	oldBody, oldAllocas := g.beginFunc()
+	oldVars := g.vars
+	oldInFunc := g.inFunction
+	oldRet := g.currentReturnType
+	oldRetLLVM := g.currentReturnLLVMType
+	g.vars = map[string]varInfo{}
+	g.inFunction = true
+	g.currentReturnType = ft.Return
+	g.currentReturnLLVMType = retLLVM
+
+	// Bind parameters (alloca + store) under the closure's parameter names.
+	for i, pt := range ft.Params {
+		llvmT := g.llvmType(pt)
+		a := g.newTmp()
+		g.emitAlloca(a, llvmT)
+		g.emitLine(fmt.Sprintf("  store %s %%p%d, %s* %s", llvmT, i, llvmT, a))
+		g.vars[paramNames[i]] = varInfo{llvmName: a, typ: pt}
+	}
+
+	// Bind captures: load from the environment (8-byte slots 1..n) into
+	// fresh allocas so the body's variable loads work uniformly.
+	for i, name := range job.captures {
+		ct := g.llvmType(job.capTypes[i])
+		slot := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = getelementptr i8, i8* %%clo, i64 %d", slot, (i+1)*8))
+		slotT := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", slotT, slot, ct))
+		v := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", v, ct, ct, slotT))
+		a := g.newTmp()
+		g.emitAlloca(a, ct)
+		g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", ct, v, ct, a))
+		g.vars[name] = varInfo{llvmName: a, typ: job.capTypes[i]}
+	}
+
+	if job.fd != nil {
+		// Statement body (nested def): emit statements, then guarantee the
+		// trailing block has a terminator (mirrors emitFuncDef).
+		for _, stmt := range job.fd.Body {
+			if err := g.emitStmt(stmt); err != nil {
+				return err
+			}
+		}
+		g.terminateOpenBlock(retLLVM)
+	} else {
+		bodyVal, err := g.emitExpr(job.lam.Body)
+		if err != nil {
+			return err
+		}
+		if _, isNone := ft.Return.(*types.NoneType); isNone || retLLVM == "void" {
+			g.emitLine("  ret void")
+		} else {
+			bt, _ := job.lam.Body.GetResolvedType().(types.Type)
+			if bt != nil {
+				bodyVal = g.castToType(bodyVal, bt, ft.Return)
+			}
+			g.emitLine(fmt.Sprintf("  ret %s %s", retLLVM, bodyVal))
+		}
+	}
+
+	g.endFunc(oldBody, oldAllocas)
+	g.emitLine("}")
+	g.vars = oldVars
+	g.inFunction = oldInFunc
+	g.currentReturnType = oldRet
+	g.currentReturnLLVMType = oldRetLLVM
+	return nil
+}
+
+// drainClosures emits all queued lambda functions (and any lambdas they in
+// turn contain), followed by the closure environment type definitions.
+func (g *Generator) drainClosures() error {
+	for i := 0; i < len(g.closureJobs); i++ {
+		job := g.closureJobs[i]
+		g.currentMod = job.mod
+		g.moduleConsts = job.modConsts
+		if err := g.emitClosureFunction(job); err != nil {
+			return err
+		}
+		g.emitLine("")
+	}
+	return nil
+}
+
 func (g *Generator) getResolvedType(fd *parser.FuncDef) types.Type {
 	if fd.ReturnType == nil {
 		return &types.NoneType{}
@@ -649,6 +975,8 @@ func (g *Generator) resolveTypeAnnotation(ann *parser.TypeAnnotation) types.Type
 		return &types.BytearrayType{}
 	case "None":
 		return &types.NoneType{}
+	case "Any":
+		return &types.AnyType{}
 	case "list":
 		if len(ann.Params) == 1 {
 			return &types.ListType{Elem: g.resolveTypeAnnotation(ann.Params[0])}
@@ -671,6 +999,16 @@ func (g *Generator) resolveTypeAnnotation(ann *parser.TypeAnnotation) types.Type
 		if len(ann.Params) == 1 {
 			return &types.IteratorType{Elem: g.resolveTypeAnnotation(ann.Params[0])}
 		}
+	case "Callable":
+		params := make([]types.Type, len(ann.CallableArgs))
+		for i, a := range ann.CallableArgs {
+			params[i] = g.resolveTypeAnnotation(a)
+		}
+		var ret types.Type = &types.NoneType{}
+		if ann.CallableRet != nil {
+			ret = g.resolveTypeAnnotation(ann.CallableRet)
+		}
+		return &types.FuncType{Params: params, Return: ret, Closure: true}
 	}
 	if ct, ok := g.classByName[ann.Name]; ok {
 		return &types.InstanceType{Class: ct}
@@ -732,6 +1070,13 @@ func (g *Generator) emitStmt(stmt parser.Stmt) error {
 		return g.emitRaiseStmt(s)
 	case *parser.YieldStmt:
 		return g.emitYieldStmt(s)
+	case *parser.FuncDef:
+		// Only nested functions reach emitStmt (top-level defs are emitted by
+		// GenerateAll). They become closure values bound to a local.
+		if s.IsClosure {
+			return g.emitNestedFuncDef(s)
+		}
+		return nil
 	default:
 		return fmt.Errorf("unknown statement type: %T", stmt)
 	}
@@ -750,7 +1095,8 @@ func (g *Generator) emitExprStmt(s *parser.ExprStmt) error {
 			if _, isSuper := attr.Object.(*parser.SuperExpr); !isSuper {
 				if _, isInst := attr.Object.GetResolvedType().(*types.InstanceType); !isInst {
 					if _, isMod := attr.Object.GetResolvedType().(*types.ModuleType); !isMod {
-						return g.emitMethodCall(attr, call.Args)
+						_, err := g.emitMethodCall(attr, call.Args)
+						return err
 					}
 				}
 			}
@@ -784,6 +1130,10 @@ func (g *Generator) emitPrintCall(call *parser.CallExpr) error {
 			g.emitLine(fmt.Sprintf("  call void @spy_print_bool(i1 %s)", val))
 		case *types.StrType, *types.BytesType:
 			g.emitLine(fmt.Sprintf("  call void @spy_print_str(i8* %s)", val))
+		case *types.AnyType:
+			s := g.newTmp()
+			g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_to_str(i8* %s)", s, val))
+			g.emitLine(fmt.Sprintf("  call void @spy_print_str(i8* %s)", s))
 		case *types.InstanceType:
 			g.printInstance(val, t)
 		}
@@ -792,20 +1142,23 @@ func (g *Generator) emitPrintCall(call *parser.CallExpr) error {
 	return nil
 }
 
-func (g *Generator) emitMethodCall(attr *parser.AttrExpr, args []parser.Expr) error {
+// emitMethodCall lowers a method call on a built-in container receiver. It
+// returns the result SSA value ("void" for None-returning mutators) so the
+// same path serves both statement and expression positions.
+func (g *Generator) emitMethodCall(attr *parser.AttrExpr, args []parser.Expr) (string, error) {
 	objVal, err := g.emitExpr(attr.Object)
 	if err != nil {
-		return err
+		return "", err
 	}
 	objType := attr.Object.GetResolvedType().(types.Type)
 
 	if lt, ok := objType.(*types.ListType); ok && attr.Attr == "append" {
 		if len(args) != 1 {
-			return fmt.Errorf("append takes 1 argument")
+			return "", fmt.Errorf("append takes 1 argument")
 		}
 		argVal, err := g.emitExpr(args[0])
 		if err != nil {
-			return err
+			return "", err
 		}
 		// Store value to a temp alloca, then pass pointer
 		elemLLVM := g.llvmType(lt.Elem)
@@ -815,28 +1168,28 @@ func (g *Generator) emitMethodCall(attr *parser.AttrExpr, args []parser.Expr) er
 		tmpCast := g.newTmp()
 		g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", tmpCast, elemLLVM, tmpAlloca))
 		g.emitLine(fmt.Sprintf("  call void @spy_list_append(i8* %s, i8* %s)", objVal, tmpCast))
-		return nil
+		return "void", nil
 	}
 
 	if _, ok := objType.(*types.BytearrayType); ok && attr.Attr == "append" {
 		if len(args) != 1 {
-			return fmt.Errorf("append takes 1 argument")
+			return "", fmt.Errorf("append takes 1 argument")
 		}
 		argVal, err := g.emitExpr(args[0])
 		if err != nil {
-			return err
+			return "", err
 		}
 		g.emitLine(fmt.Sprintf("  call void @spy_bytearray_append(i8* %s, i64 %s)", objVal, argVal))
-		return nil
+		return "void", nil
 	}
 
 	if st, ok := objType.(*types.SetType); ok && (attr.Attr == "add" || attr.Attr == "discard") {
 		if len(args) != 1 {
-			return fmt.Errorf("%s takes 1 argument", attr.Attr)
+			return "", fmt.Errorf("%s takes 1 argument", attr.Attr)
 		}
 		argVal, err := g.emitExpr(args[0])
 		if err != nil {
-			return err
+			return "", err
 		}
 		if at, ok := args[0].GetResolvedType().(types.Type); ok {
 			argVal = g.castToType(argVal, at, st.Elem)
@@ -852,36 +1205,204 @@ func (g *Generator) emitMethodCall(attr *parser.AttrExpr, args []parser.Expr) er
 			fn = "spy_set_discard"
 		}
 		g.emitLine(fmt.Sprintf("  call void @%s(i8* %s, i8* %s)", fn, objVal, tmpCast))
-		return nil
+		return "void", nil
 	}
 
-	return fmt.Errorf("unknown method: %s.%s", objType, attr.Attr)
+	// String methods.
+	if _, ok := objType.(*types.StrType); ok {
+		return g.emitStrMethod(attr.Attr, objVal, args)
+	}
+
+	// List methods (append handled above).
+	if lt, ok := objType.(*types.ListType); ok {
+		return g.emitListMethod(lt, attr.Attr, objVal, args)
+	}
+
+	// Dict methods.
+	if mt, ok := objType.(*types.MapType); ok {
+		return g.emitMapMethod(mt, attr.Attr, objVal, args)
+	}
+
+	return "", fmt.Errorf("unknown method: %s.%s", objType, attr.Attr)
 }
 
-func (g *Generator) emitSetContains(attr *parser.AttrExpr, st *types.SetType, args []parser.Expr) (string, error) {
-	if len(args) != 1 {
-		return "", fmt.Errorf("contains takes 1 argument")
+// emitMapMethod lowers dict.<method>(args). objVal is the receiver's i8*.
+func (g *Generator) emitMapMethod(mt *types.MapType, name string, objVal string, args []parser.Expr) (string, error) {
+	switch name {
+	case "keys":
+		r := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_map_keys(i8* %s)", r, objVal))
+		return r, nil
+	case "values":
+		r := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_map_values(i8* %s)", r, objVal))
+		return r, nil
+	case "clear":
+		g.emitLine(fmt.Sprintf("  call void @spy_map_clear(i8* %s)", objVal))
+		return "void", nil
+	case "update":
+		other, err := g.emitExpr(args[0])
+		if err != nil {
+			return "", err
+		}
+		g.emitLine(fmt.Sprintf("  call void @spy_map_extend(i8* %s, i8* %s)", objVal, other))
+		return "void", nil
+	case "get":
+		keyPtr, err := g.elemArgToPtr(args[0], mt.Key)
+		if err != nil {
+			return "", err
+		}
+		defPtr, err := g.elemArgToPtr(args[1], mt.Value)
+		if err != nil {
+			return "", err
+		}
+		valLLVM := g.llvmType(mt.Value)
+		p := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_map_get_or(i8* %s, i8* %s, i8* %s)", p, objVal, keyPtr, defPtr))
+		cast := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", cast, p, valLLVM))
+		r := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", r, valLLVM, valLLVM, cast))
+		return r, nil
 	}
-	objVal, err := g.emitExpr(attr.Object)
+	return "", fmt.Errorf("unknown dict method: %s", name)
+}
+
+// elemArgToPtr evaluates arg, casts it to elemType, stores it in a fresh
+// alloca, and returns an i8* pointing at it (the calling convention the
+// runtime container primitives expect for by-value elements).
+func (g *Generator) elemArgToPtr(arg parser.Expr, elemType types.Type) (string, error) {
+	v, err := g.emitExpr(arg)
 	if err != nil {
 		return "", err
 	}
-	argVal, err := g.emitExpr(args[0])
-	if err != nil {
-		return "", err
+	if at, ok := arg.GetResolvedType().(types.Type); ok {
+		v = g.castToType(v, at, elemType)
 	}
-	if at, ok := args[0].GetResolvedType().(types.Type); ok {
-		argVal = g.castToType(argVal, at, st.Elem)
+	elemLLVM := g.llvmType(elemType)
+	a := g.newTmp()
+	g.emitAlloca(a, elemLLVM)
+	g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, v, elemLLVM, a))
+	cast := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", cast, elemLLVM, a))
+	return cast, nil
+}
+
+// emitListMethod lowers list.<method>(args). objVal is the receiver's i8*.
+func (g *Generator) emitListMethod(lt *types.ListType, name string, objVal string, args []parser.Expr) (string, error) {
+	elemLLVM := g.llvmType(lt.Elem)
+	// Equality kind: 1 = element is a str/bytes pointer (compare by value).
+	eqKind := "0"
+	switch lt.Elem.(type) {
+	case *types.StrType, *types.BytesType:
+		eqKind = "1"
 	}
-	elemLLVM := g.llvmType(st.Elem)
-	tmpAlloca := g.newTmp()
-	g.emitAlloca(tmpAlloca, elemLLVM)
-	g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, argVal, elemLLVM, tmpAlloca))
-	tmpCast := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", tmpCast, elemLLVM, tmpAlloca))
-	result := g.newTmp()
-	g.emitLine(fmt.Sprintf("  %s = call i1 @spy_set_contains(i8* %s, i8* %s)", result, objVal, tmpCast))
-	return result, nil
+	switch name {
+	case "pop":
+		p := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_list_pop(i8* %s)", p, objVal))
+		cast := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", cast, p, elemLLVM))
+		r := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", r, elemLLVM, elemLLVM, cast))
+		return r, nil
+	case "reverse":
+		g.emitLine(fmt.Sprintf("  call void @spy_list_reverse(i8* %s)", objVal))
+		return "void", nil
+	case "clear":
+		g.emitLine(fmt.Sprintf("  call void @spy_list_clear(i8* %s)", objVal))
+		return "void", nil
+	case "insert":
+		idxVal, err := g.emitExpr(args[0])
+		if err != nil {
+			return "", err
+		}
+		ptr, err := g.elemArgToPtr(args[1], lt.Elem)
+		if err != nil {
+			return "", err
+		}
+		g.emitLine(fmt.Sprintf("  call void @spy_list_insert(i8* %s, i64 %s, i8* %s)", objVal, idxVal, ptr))
+		return "void", nil
+	case "remove":
+		ptr, err := g.elemArgToPtr(args[0], lt.Elem)
+		if err != nil {
+			return "", err
+		}
+		g.emitLine(fmt.Sprintf("  call void @spy_list_remove(i8* %s, i8* %s, i64 %s)", objVal, ptr, eqKind))
+		return "void", nil
+	case "index", "count":
+		ptr, err := g.elemArgToPtr(args[0], lt.Elem)
+		if err != nil {
+			return "", err
+		}
+		fn := "spy_list_index"
+		if name == "count" {
+			fn = "spy_list_count_elem"
+		}
+		r := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i64 @%s(i8* %s, i8* %s, i64 %s)", r, fn, objVal, ptr, eqKind))
+		return r, nil
+	case "extend":
+		other, err := g.emitExpr(args[0])
+		if err != nil {
+			return "", err
+		}
+		g.emitLine(fmt.Sprintf("  call void @spy_list_extend(i8* %s, i8* %s)", objVal, other))
+		return "void", nil
+	case "sort":
+		sortKind := "0"
+		switch lt.Elem.(type) {
+		case *types.FloatType:
+			sortKind = "1"
+		case *types.StrType:
+			sortKind = "2"
+		}
+		g.emitLine(fmt.Sprintf("  call void @spy_list_sort(i8* %s, i64 %s)", objVal, sortKind))
+		return "void", nil
+	}
+	return "", fmt.Errorf("unknown list method: %s", name)
+}
+
+// emitStrMethod lowers str.<method>(args). objVal is the receiver's i8*.
+func (g *Generator) emitStrMethod(name string, objVal string, args []parser.Expr) (string, error) {
+	// Group 0: no-arg, str-returning.
+	switch name {
+	case "upper", "lower", "capitalize", "strip", "lstrip", "rstrip":
+		r := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_%s(i8* %s)", r, name, objVal))
+		return r, nil
+	case "isdigit", "isalpha", "isspace", "isupper", "islower":
+		r := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i1 @spy_str_%s(i8* %s)", r, name, objVal))
+		return r, nil
+	}
+	// Remaining methods take one or two arguments.
+	argVals := make([]string, len(args))
+	for i, a := range args {
+		v, err := g.emitExpr(a)
+		if err != nil {
+			return "", err
+		}
+		argVals[i] = v
+	}
+	r := g.newTmp()
+	switch name {
+	case "startswith", "endswith":
+		g.emitLine(fmt.Sprintf("  %s = call i1 @spy_str_%s(i8* %s, i8* %s)", r, name, objVal, argVals[0]))
+	case "find", "rfind", "count":
+		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_str_%s(i8* %s, i8* %s)", r, name, objVal, argVals[0]))
+	case "replace":
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_replace(i8* %s, i8* %s, i8* %s)", r, objVal, argVals[0], argVals[1]))
+	case "zfill":
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_zfill(i8* %s, i64 %s)", r, objVal, argVals[0]))
+	case "split":
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_split(i8* %s, i8* %s)", r, objVal, argVals[0]))
+	case "join":
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_join(i8* %s, i8* %s)", r, objVal, argVals[0]))
+	default:
+		return "", fmt.Errorf("unknown str method: %s", name)
+	}
+	return r, nil
 }
 
 func (g *Generator) emitAssignStmt(s *parser.AssignStmt) error {
@@ -1128,10 +1649,20 @@ func (g *Generator) emitAttrAssignStmt(s *parser.AttrAssignStmt) error {
 	return nil
 }
 
-// castToType upcasts `val` (of type `fromT`) to `toT` with a bitcast if both
-// are instance pointer types and fromT is a subclass of toT. Returns the value
-// unchanged otherwise.
+// castToType upcasts `val` (of type `fromT`) to `toT`. Handles three cases:
+//   - InstanceType subclass -> superclass: emits a bitcast on the pointer.
+//   - Any concrete T -> AnyType: emits the matching spy_any_box_<T> call so
+//     the container or target slot stores a tagged box rather than the raw
+//     scalar/pointer.
+//   - Otherwise the value passes through unchanged (identity types).
 func (g *Generator) castToType(val string, fromT, toT types.Type) string {
+	// T -> Any: box the value via spy_any_box_<kind>.
+	if _, ok := toT.(*types.AnyType); ok {
+		if _, alreadyAny := fromT.(*types.AnyType); alreadyAny {
+			return val
+		}
+		return g.emitAnyBox(val, fromT)
+	}
 	fi, ok := fromT.(*types.InstanceType)
 	if !ok {
 		return val
@@ -1146,6 +1677,82 @@ func (g *Generator) castToType(val string, fromT, toT types.Type) string {
 	result := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = bitcast %s %s to %s",
 		result, g.llvmType(fromT), val, g.llvmType(toT)))
+	return result
+}
+
+// emitAnyBuiltin lowers a call to one of the any_* builtins (the family
+// declared in types.AnyBuiltinName) into the corresponding runtime call.
+// The type checker has already validated arity and that the argument is Any
+// (except for any_none which takes no args), so this only emits.
+func (g *Generator) emitAnyBuiltin(name string, e *parser.CallExpr) (string, error) {
+	if name == "any_none" {
+		out := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_none()", out))
+		return out, nil
+	}
+	if len(e.Args) != 1 {
+		return "", fmt.Errorf("%s takes 1 argument", name)
+	}
+	argVal, err := g.emitExpr(e.Args[0])
+	if err != nil {
+		return "", err
+	}
+	out := g.newTmp()
+	switch name {
+	case "any_int":
+		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_any_unbox_int(i8* %s)", out, argVal))
+	case "any_float":
+		g.emitLine(fmt.Sprintf("  %s = call double @spy_any_unbox_float(i8* %s)", out, argVal))
+	case "any_str":
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_unbox_str(i8* %s)", out, argVal))
+	case "any_bool":
+		g.emitLine(fmt.Sprintf("  %s = call i1 @spy_any_unbox_bool(i8* %s)", out, argVal))
+	case "any_bytes":
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_unbox_bytes(i8* %s)", out, argVal))
+	case "any_list":
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_unbox_list(i8* %s)", out, argVal))
+	case "any_dict":
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_unbox_map(i8* %s)", out, argVal))
+	case "any_tag":
+		t32 := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i32 @spy_any_tag(i8* %s)", t32, argVal))
+		g.emitLine(fmt.Sprintf("  %s = sext i32 %s to i64", out, t32))
+	case "any_is_none":
+		g.emitLine(fmt.Sprintf("  %s = call i1 @spy_any_is_none(i8* %s)", out, argVal))
+	default:
+		return "", fmt.Errorf("unhandled any builtin %q", name)
+	}
+	return out, nil
+}
+
+// emitAnyBox emits a spy_any_box_<kind> call for `val` whose static type is
+// `fromT`. NoneType becomes spy_any_none(). Class instances are not yet
+// boxable (no tag is reserved for them) so the function falls back to a
+// no-op cast — the type checker is responsible for rejecting that.
+func (g *Generator) emitAnyBox(val string, fromT types.Type) string {
+	result := g.newTmp()
+	switch fromT.(type) {
+	case *types.IntType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_box_int(i64 %s)", result, val))
+	case *types.FloatType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_box_float(double %s)", result, val))
+	case *types.BoolType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_box_bool(i1 %s)", result, val))
+	case *types.StrType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_box_str(i8* %s)", result, val))
+	case *types.BytesType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_box_bytes(i8* %s)", result, val))
+	case *types.ListType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_box_list(i8* %s)", result, val))
+	case *types.MapType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_box_map(i8* %s)", result, val))
+	case *types.NoneType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_any_none()", result))
+	default:
+		// Unknown source type — pass through. The type checker should not
+		// allow this path; defensive only.
+		return val
+	}
 	return result
 }
 
@@ -1370,11 +1977,71 @@ func (g *Generator) emitForCollection(s *parser.ForStmt) error {
 		return g.emitForSet(s, collVal, t)
 	case *types.StrType:
 		return g.emitForStr(s, collVal)
+	case *types.MapType:
+		return g.emitForMap(s, collVal, t)
 	case *types.IteratorType:
 		return g.emitForIterator(s, collVal, t)
 	}
 
 	return fmt.Errorf("cannot iterate over %s", iterType)
+}
+
+// emitForMap iterates a dict, binding the loop variable to each key (CPython
+// semantics). Modeled on emitForSet, using spy_map_next / spy_map_key_at.
+func (g *Generator) emitForMap(s *parser.ForStmt, mapVal string, mt *types.MapType) error {
+	idxVar := g.newTmp()
+	g.emitAlloca(idxVar, "i64")
+	g.emitLine(fmt.Sprintf("  store i64 -1, i64* %s", idxVar))
+
+	keyLLVM := g.llvmType(mt.Key)
+	loopVar := g.newTmp()
+	g.emitAlloca(loopVar, keyLLVM)
+	g.vars[s.VarName] = varInfo{llvmName: loopVar, typ: mt.Key}
+
+	condLabel := g.newLabel("formap.cond")
+	bodyLabel := g.newLabel("formap.body")
+	incLabel := g.newLabel("formap.inc")
+	endLabel := g.newLabel("formap.end")
+
+	g.breakLabels = append(g.breakLabels, endLabel)
+	g.continueLabels = append(g.continueLabels, incLabel)
+
+	g.emitLine(fmt.Sprintf("  br label %%%s", condLabel))
+	g.emitLine(fmt.Sprintf("%s:", condLabel))
+
+	curIdx := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i64, i64* %s", curIdx, idxVar))
+	nextIdx := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i64 @spy_map_next(i8* %s, i64 %s)", nextIdx, mapVal, curIdx))
+	cmp := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = icmp sge i64 %s, 0", cmp, nextIdx))
+	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", cmp, bodyLabel, endLabel))
+
+	g.emitLine(fmt.Sprintf("%s:", bodyLabel))
+	keyPtr := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_map_key_at(i8* %s, i64 %s)", keyPtr, mapVal, nextIdx))
+	keyCast := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", keyCast, keyPtr, keyLLVM))
+	keyVal := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", keyVal, keyLLVM, keyLLVM, keyCast))
+	g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", keyLLVM, keyVal, keyLLVM, loopVar))
+
+	for _, stmt := range s.Body {
+		if err := g.emitStmt(stmt); err != nil {
+			return err
+		}
+	}
+	g.emitLine(fmt.Sprintf("  br label %%%s", incLabel))
+
+	g.emitLine(fmt.Sprintf("%s:", incLabel))
+	g.emitLine(fmt.Sprintf("  store i64 %s, i64* %s", nextIdx, idxVar))
+	g.emitLine(fmt.Sprintf("  br label %%%s", condLabel))
+
+	g.emitLine(fmt.Sprintf("%s:", endLabel))
+
+	g.breakLabels = g.breakLabels[:len(g.breakLabels)-1]
+	g.continueLabels = g.continueLabels[:len(g.continueLabels)-1]
+	return nil
 }
 
 func (g *Generator) emitForSet(s *parser.ForStmt, setVal string, st *types.SetType) error {
@@ -1617,6 +2284,9 @@ func (g *Generator) emitExpr(expr parser.Expr) (string, error) {
 	case *parser.NoneLit:
 		return "void", nil
 
+	case *parser.LambdaExpr:
+		return g.emitLambda(e)
+
 	case *parser.IdentExpr:
 		// Class names are not proper values — they are only used as call
 		// targets or isinstance() args, which are handled elsewhere. Return
@@ -1636,8 +2306,8 @@ func (g *Generator) emitExpr(expr parser.Expr) (string, error) {
 			if t == nil {
 				t, _ = e.GetResolvedType().(types.Type)
 			}
-			if _, isFunc := t.(*types.FuncType); isFunc {
-				// from-imported function used as a value — emit its address
+			if ft, isFunc := t.(*types.FuncType); isFunc && !ft.Closure {
+				// from-imported named function used as a value — emit its address
 				return info.llvmName, nil
 			}
 			llvmT := g.llvmType(t)
@@ -1748,6 +2418,74 @@ func (g *Generator) emitBytesLit(e *parser.BytesLit) (string, error) {
 	return tmp, nil
 }
 
+// valueToPtr stores an already-emitted value (optionally cast from fromType
+// to toType) in a fresh alloca and returns an i8* to it.
+func (g *Generator) valueToPtr(val string, fromType, toType types.Type) string {
+	if fromType != nil {
+		val = g.castToType(val, fromType, toType)
+	}
+	elemLLVM := g.llvmType(toType)
+	a := g.newTmp()
+	g.emitAlloca(a, elemLLVM)
+	g.emitLine(fmt.Sprintf("  store %s %s, %s* %s", elemLLVM, val, elemLLVM, a))
+	cast := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast %s* %s to i8*", cast, elemLLVM, a))
+	return cast
+}
+
+// emitMembership lowers `elem in container` / `elem not in container`.
+func (g *Generator) emitMembership(e *parser.BinaryExpr, elemVal, containerVal string) (string, error) {
+	containerType := e.Right.GetResolvedType().(types.Type)
+	elemType := e.Left.GetResolvedType().(types.Type)
+	neg := e.Op == "not in"
+	r := g.newTmp()
+	switch ct := containerType.(type) {
+	case *types.StrType:
+		f := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_str_find(i8* %s, i8* %s)", f, containerVal, elemVal))
+		if neg {
+			g.emitLine(fmt.Sprintf("  %s = icmp slt i64 %s, 0", r, f))
+		} else {
+			g.emitLine(fmt.Sprintf("  %s = icmp sge i64 %s, 0", r, f))
+		}
+		return r, nil
+	case *types.ListType:
+		ptr := g.valueToPtr(elemVal, elemType, ct.Elem)
+		kind := "0"
+		switch ct.Elem.(type) {
+		case *types.StrType, *types.BytesType:
+			kind = "1"
+		}
+		idx := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_list_index(i8* %s, i8* %s, i64 %s)", idx, containerVal, ptr, kind))
+		if neg {
+			g.emitLine(fmt.Sprintf("  %s = icmp slt i64 %s, 0", r, idx))
+		} else {
+			g.emitLine(fmt.Sprintf("  %s = icmp sge i64 %s, 0", r, idx))
+		}
+		return r, nil
+	case *types.SetType:
+		ptr := g.valueToPtr(elemVal, elemType, ct.Elem)
+		c := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i1 @spy_set_contains(i8* %s, i8* %s)", c, containerVal, ptr))
+		if neg {
+			g.emitLine(fmt.Sprintf("  %s = xor i1 %s, 1", r, c))
+			return r, nil
+		}
+		return c, nil
+	case *types.MapType:
+		ptr := g.valueToPtr(elemVal, elemType, ct.Key)
+		c := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = call i1 @spy_map_contains(i8* %s, i8* %s)", c, containerVal, ptr))
+		if neg {
+			g.emitLine(fmt.Sprintf("  %s = xor i1 %s, 1", r, c))
+			return r, nil
+		}
+		return c, nil
+	}
+	return "", fmt.Errorf("'in' not supported on %s", containerType)
+}
+
 func (g *Generator) emitBinaryExpr(e *parser.BinaryExpr) (string, error) {
 	// Handle short-circuit for and/or
 	if e.Op == "and" || e.Op == "or" {
@@ -1764,6 +2502,12 @@ func (g *Generator) emitBinaryExpr(e *parser.BinaryExpr) (string, error) {
 	}
 
 	leftType := e.Left.GetResolvedType().(types.Type)
+
+	// Membership tests dispatch on the container (right operand), before
+	// instance operator overloading (the element may itself be an instance).
+	if e.Op == "in" || e.Op == "not in" {
+		return g.emitMembership(e, leftVal, rightVal)
+	}
 
 	// Operator overloading on class instances: dispatch to the dunder through
 	// the vtable.
@@ -1868,7 +2612,10 @@ func (g *Generator) emitBinaryExpr(e *parser.BinaryExpr) (string, error) {
 			g.emitLine(fmt.Sprintf("  %s = fcmp oge double %s, %s", result, leftVal, rightVal))
 		}
 
-	case *types.StrType:
+	// bytes / bytearray share str's length-prefixed layout, so the same
+	// runtime primitives (byte-wise concat / equality / lexicographic
+	// compare) implement their operators correctly.
+	case *types.StrType, *types.BytesType, *types.BytearrayType:
 		switch e.Op {
 		case "+":
 			g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_concat(i8* %s, i8* %s)", result, leftVal, rightVal))
@@ -1978,6 +2725,11 @@ func (g *Generator) emitUnaryExpr(e *parser.UnaryExpr) (string, error) {
 }
 
 func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
+	// Calling a first-class closure value (lambda result, Callable-typed
+	// variable/param, or any expression whose type is a closure FuncType).
+	if ft, ok := e.Func.GetResolvedType().(*types.FuncType); ok && ft.Closure {
+		return g.emitClosureCall(e, ft)
+	}
 	// Handle builtin calls
 	if ident, ok := e.Func.(*parser.IdentExpr); ok {
 		switch ident.Name {
@@ -2006,6 +2758,10 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 			return "", fmt.Errorf("range() can only be used in for loops")
 		case "next":
 			return g.emitNextCall(e)
+		case "any_int", "any_float", "any_str", "any_bool",
+			"any_bytes", "any_list", "any_dict",
+			"any_tag", "any_is_none", "any_none":
+			return g.emitAnyBuiltin(ident.Name, e)
 		}
 	}
 
@@ -2034,16 +2790,9 @@ func (g *Generator) emitCallExpr(e *parser.CallExpr) (string, error) {
 			}
 			return g.emitUserCall(fmt.Sprintf("spy_%s_%s", modT.ID, attr.Attr), e)
 		}
-		// Set.contains returns a bool; route it before the generic method
-		// path which is void-returning.
-		if st, isSet := attr.Object.GetResolvedType().(*types.SetType); isSet && attr.Attr == "contains" {
-			return g.emitSetContains(attr, st, e.Args)
-		}
-		// Otherwise it's a method (existing behavior: list.append, etc.)
-		if err := g.emitMethodCall(attr, e.Args); err != nil {
-			return "", err
-		}
-		return "void", nil
+		// Otherwise it's a built-in container method (list.append, str.upper,
+		// …). emitMethodCall returns the result value ("void" for mutators).
+		return g.emitMethodCall(attr, e.Args)
 	}
 
 	// Constructor call: the callee is an identifier whose resolved type is
@@ -2423,6 +3172,8 @@ func (g *Generator) emitIntConversion(e *parser.CallExpr) (string, error) {
 		g.emitLine(fmt.Sprintf("  %s = fptosi double %s to i64", result, argVal))
 	case *types.BoolType:
 		g.emitLine(fmt.Sprintf("  %s = zext i1 %s to i64", result, argVal))
+	case *types.StrType:
+		g.emitLine(fmt.Sprintf("  %s = call i64 @spy_str_to_int(i8* %s)", result, argVal))
 	}
 
 	return result, nil
@@ -2442,6 +3193,8 @@ func (g *Generator) emitFloatConversion(e *parser.CallExpr) (string, error) {
 		return argVal, nil
 	case *types.IntType:
 		g.emitLine(fmt.Sprintf("  %s = sitofp i64 %s to double", result, argVal))
+	case *types.StrType:
+		g.emitLine(fmt.Sprintf("  %s = call double @spy_str_to_float(i8* %s)", result, argVal))
 	}
 
 	return result, nil
@@ -2711,6 +3464,11 @@ func (g *Generator) emitMapLit(e *parser.MapLit) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		// Upcast each value to the declared map value type. For map[K, Any]
+		// this boxes int/float/bool/str/list/map/bytes into a SpyAny.
+		if vt, ok := e.Values[i].GetResolvedType().(types.Type); ok {
+			valVal = g.castToType(valVal, vt, mapType.Value)
+		}
 
 		keyAlloca := g.newTmp()
 		g.emitAlloca(keyAlloca, keyLLVM)
@@ -2819,11 +3577,17 @@ func (g *Generator) llvmType(t types.Type) string {
 		return "i8*"
 	case *types.NoneType:
 		return "void"
+	case *types.AnyType:
+		return "i8*"
 	case *types.ListType:
 		return "i8*"
 	case *types.MapType:
 		return "i8*"
 	case *types.SetType:
+		return "i8*"
+	case *types.FuncType:
+		// First-class callable values are an i8* to a heap closure whose
+		// first slot is the function pointer.
 		return "i8*"
 	case *types.InstanceType:
 		return fmt.Sprintf("%%Class.%s*", v.Class.Name)
@@ -2859,6 +3623,12 @@ func (g *Generator) typeSize(t types.Type) int {
 		return 1
 	case *types.StrType:
 		return 8 // pointer size
+	case *types.BytesType:
+		return 8
+	case *types.BytearrayType:
+		return 8
+	case *types.AnyType:
+		return 8 // pointer to SpyAny
 	case *types.ListType:
 		return 8
 	case *types.MapType:
@@ -2940,6 +3710,21 @@ func (g *Generator) emitAlloca(name, llvmType string) {
 		return
 	}
 	g.buf.WriteString(line)
+}
+
+// emitEntry writes an instruction into the entry-block buffer (alongside the
+// allocas), so it dominates every block in the function. Used for side-effect-
+// free setup like jmp_buf bitcasts that must remain valid across the resume
+// edges of a generator state machine, where the body block they'd otherwise
+// live in can be bypassed by the dispatch switch.
+func (g *Generator) emitEntry(line string) {
+	if g.funcAllocas != nil {
+		g.funcAllocas.WriteString(line)
+		g.funcAllocas.WriteString("\n")
+		return
+	}
+	g.buf.WriteString(line)
+	g.buf.WriteString("\n")
 }
 
 // beginFunc swaps in fresh body/alloca buffers for the function currently

@@ -1,0 +1,631 @@
+# stdlib/requests.spy — HTTP client modelled on the public surface of
+# Python's `requests` library. Built on top of stdlib/socket and
+# stdlib/ssl; no external dependencies.
+#
+#   import requests
+#   r = requests.get("https://example.com/", {})
+#   print(r.status_code)
+#   print(r.text)
+#
+# Supported:
+#   * get / post / put / delete / head / patch / options / request
+#   * Both http:// and https:// (HTTPS performs full TLS handshake with
+#     hostname verification against the system trust store)
+#   * Custom headers via a map[str, str] argument
+#   * Request body as bytes
+#   * Response: status_code, text, content, headers, url, ok,
+#     reason, json(), raise_for_status()
+#   * Response body framed by Content-Length or Transfer-Encoding:
+#     chunked (decoded transparently)
+#   * Per-process recv/send/connect/DNS deadlines via set_timeout()
+#
+# Intentional gaps vs CPython requests:
+#   * No Session, no connection pooling, no cookies, no auth handlers,
+#     no hooks, no proxies, no streaming uploads.
+#   * No automatic redirect following (returns the 3xx Response as-is).
+#   * Header keys on the response are lowercased; the original casing
+#     is not preserved.
+#   * Headers are str -> str only; multi-valued headers collapse to the
+#     last value seen.
+
+import json
+from socket import Socket, AF_INET, SOCK_STREAM, gethostbyname_timeout
+from ssl import create_default_context, SSLContext, SSLSocket
+
+
+# Exceptions. CPython's `requests` defines its own ConnectionError /
+# Timeout subclasses of RequestException, but spython has a flat class
+# namespace and the builtins module already defines ConnectionError /
+# TimeoutError under OSError. To avoid the name collision and keep a
+# single root for callers to catch, every requests failure raises a
+# RequestException subclass instead. Connection-level failures bubble
+# up wrapped in RequestException so a single `except RequestException`
+# catches the lot.
+class RequestException(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+
+class HTTPError(RequestException):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+
+class InvalidURL(RequestException):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+
+# Process-wide knobs. Stashed in single-element lists because spython
+# has no `global` statement for reassigning module-scope names from
+# inside a function — the list slot gives us a mutable handle that
+# survives reads and writes from anywhere.
+_VERIFY: list[bool] = [True]
+_TIMEOUT: list[float] = [30.0]
+
+
+# Toggle TLS peer + hostname verification. Mirrors CPython requests'
+# `verify=` kwarg, which spython's call plumbing can't yet thread
+# through every helper. Pass False only for tests against self-signed
+# servers.
+def set_verify(verify: bool) -> None:
+    _VERIFY[0] = verify
+
+
+# Set the deadline (in seconds) applied to DNS, TCP connect, and each
+# recv/send. A non-positive value disables the deadline. Defaults to
+# 30s; this is the safety net that prevents a hung server or a slow
+# resolver from holding up the process indefinitely.
+def set_timeout(seconds: float) -> None:
+    _TIMEOUT[0] = seconds
+
+
+def _verify_enabled() -> bool:
+    return _VERIFY[0]
+
+
+def _timeout_seconds() -> float:
+    return _TIMEOUT[0]
+
+
+# Tiny string helpers — spython str doesn't yet have .find / .lower /
+# .split as methods, so we implement what we need locally.
+def _index_of(s: str, sub: str, start: int) -> int:
+    n: int = len(s)
+    m: int = len(sub)
+    if m == 0:
+        return start
+    i: int = start
+    while i + m <= n:
+        if s[i:i+m] == sub:
+            return i
+        i = i + 1
+    return -1
+
+
+def _to_lower(s: str) -> str:
+    src: bytes = bytes(s)
+    out: bytearray = bytearray(0)
+    i: int = 0
+    while i < len(src):
+        b: int = src[i]
+        if b >= 65 and b <= 90:
+            out.append(b + 32)
+        else:
+            out.append(b)
+        i = i + 1
+    return str(bytes(out))
+
+
+def _strip(s: str) -> str:
+    n: int = len(s)
+    lo: int = 0
+    while lo < n and (s[lo:lo+1] == " " or s[lo:lo+1] == "\t"):
+        lo = lo + 1
+    hi: int = n
+    while hi > lo and (s[hi-1:hi] == " " or s[hi-1:hi] == "\t" or s[hi-1:hi] == "\r" or s[hi-1:hi] == "\n"):
+        hi = hi - 1
+    return s[lo:hi]
+
+
+def _int_to_str(n: int) -> str:
+    return str(n)
+
+
+# Append every byte of `b` to `dst`. Until bytes get a `+` operator,
+# this is the standard accumulator pattern.
+def _append_bytes(dst: bytearray, b: bytes) -> None:
+    i: int = 0
+    n: int = len(b)
+    while i < n:
+        dst.append(b[i])
+        i = i + 1
+
+
+def _append_str(dst: bytearray, s: str) -> None:
+    _append_bytes(dst, bytes(s))
+
+
+# Parse a URL of the form scheme://host[:port][/path[?query]]. Returns
+# (scheme, host, port, path_with_query). Raises InvalidURL on failure.
+def _parse_url(url: str) -> tuple[str, str, int, str]:
+    si: int = _index_of(url, "://", 0)
+    if si < 0:
+        raise InvalidURL("requests: missing scheme in URL: " + url)
+    scheme: str = _to_lower(url[0:si])
+    rest: str = url[si+3:len(url)]
+    pi: int = _index_of(rest, "/", 0)
+    host_port: str = rest
+    path: str = "/"
+    if pi >= 0:
+        host_port = rest[0:pi]
+        path = rest[pi:len(rest)]
+    cpi: int = _index_of(host_port, ":", 0)
+    host: str = host_port
+    port: int = 80
+    if scheme == "https":
+        port = 443
+    if cpi >= 0:
+        host = host_port[0:cpi]
+        port = int(host_port[cpi+1:len(host_port)])
+    if scheme != "http" and scheme != "https":
+        raise InvalidURL("requests: unsupported URL scheme: " + scheme)
+    return (scheme, host, port, path)
+
+
+# Iterate the user-supplied header map and append each entry to `out`.
+# Backed by an @extern that walks the underlying SpyMap; spython has no
+# native map iteration syntax yet.
+@extern
+def _walk_headers(headers: map[str, str], out: bytearray) -> None: ...
+
+
+# Lookup a header by key with a default. Backed by spy_map_contains so
+# we can detect "set or not" without going through index/exception.
+@extern
+def _has_header(headers: map[str, str], key: str) -> bool: ...
+
+
+# Build the wire bytes for a request. Always sends HTTP/1.0 with
+# `Connection: close`; this trades keep-alive for radically simpler
+# response framing. User-supplied headers are appended verbatim; if
+# they collide with the defaults below the user's wins (the C helper
+# checks the map first).
+def _build_request(method: str, host: str, path: str, body: bytes, headers: map[str, str]) -> bytes:
+    out: bytearray = bytearray(0)
+    _append_str(out, method)
+    _append_str(out, " ")
+    _append_str(out, path)
+    _append_str(out, " HTTP/1.0\r\n")
+
+    if not _has_header(headers, "Host"):
+        _append_str(out, "Host: ")
+        _append_str(out, host)
+        _append_str(out, "\r\n")
+    if not _has_header(headers, "Connection"):
+        _append_str(out, "Connection: close\r\n")
+    if not _has_header(headers, "User-Agent"):
+        _append_str(out, "User-Agent: spython-requests/0.1\r\n")
+    if not _has_header(headers, "Accept"):
+        _append_str(out, "Accept: */*\r\n")
+    body_len: int = len(body)
+    if body_len > 0 and not _has_header(headers, "Content-Length"):
+        _append_str(out, "Content-Length: ")
+        _append_str(out, _int_to_str(body_len))
+        _append_str(out, "\r\n")
+
+    _walk_headers(headers, out)
+
+    _append_str(out, "\r\n")
+    if body_len > 0:
+        _append_bytes(out, body)
+    return bytes(out)
+
+
+# Find the byte offset just past "\r\n\r\n" in `buf`, or -1 if the
+# header terminator hasn't arrived yet.
+def _find_header_end(buf: bytearray) -> int:
+    n: int = len(buf)
+    i: int = 0
+    while i + 3 < n:
+        if buf[i] == 13 and buf[i+1] == 10 and buf[i+2] == 13 and buf[i+3] == 10:
+            return i + 4
+        i = i + 1
+    return -1
+
+
+# Pull the integer Content-Length out of the header block ending at
+# `header_end`, or -1 if the response didn't supply one.
+def _parse_content_length(buf: bytearray, header_end: int) -> int:
+    target_lc: bytes = b"content-length:"
+    tn: int = len(target_lc)
+    i: int = 0
+    end: int = header_end
+    while i + tn <= end:
+        match: bool = True
+        j: int = 0
+        while j < tn:
+            b: int = buf[i+j]
+            tb: int = target_lc[j]
+            if b >= 65 and b <= 90:
+                b = b + 32
+            if b != tb:
+                match = False
+                j = tn
+            else:
+                j = j + 1
+        if match:
+            k: int = i + tn
+            while k < end and (buf[k] == 32 or buf[k] == 9):
+                k = k + 1
+            v: int = 0
+            seen: bool = False
+            while k < end and buf[k] >= 48 and buf[k] <= 57:
+                v = v * 10 + (buf[k] - 48)
+                seen = True
+                k = k + 1
+            if seen:
+                return v
+            return -1
+        i = i + 1
+    return -1
+
+
+# Detect Transfer-Encoding: chunked in the header block. Tolerates
+# "chunked" anywhere in the value (servers may emit "gzip, chunked").
+def _is_chunked(buf: bytearray, header_end: int) -> bool:
+    target_lc: bytes = b"transfer-encoding:"
+    tn: int = len(target_lc)
+    i: int = 0
+    end: int = header_end
+    while i + tn <= end:
+        match: bool = True
+        j: int = 0
+        while j < tn:
+            b: int = buf[i+j]
+            tb: int = target_lc[j]
+            if b >= 65 and b <= 90:
+                b = b + 32
+            if b != tb:
+                match = False
+                j = tn
+            else:
+                j = j + 1
+        if match:
+            needle: bytes = b"chunked"
+            nn: int = len(needle)
+            k: int = i + tn
+            while k + nn <= end:
+                ok: bool = True
+                p: int = 0
+                while p < nn:
+                    bb: int = buf[k+p]
+                    nb: int = needle[p]
+                    if bb >= 65 and bb <= 90:
+                        bb = bb + 32
+                    if bb != nb:
+                        ok = False
+                        p = nn
+                    else:
+                        p = p + 1
+                if ok:
+                    return True
+                if buf[k] == 13:
+                    if k + 1 < end and buf[k+1] == 10:
+                        return False
+                k = k + 1
+            return False
+        i = i + 1
+    return False
+
+
+# Find the byte offset of "\r\n" at or after `start` (returns the
+# offset of the '\r'), or -1 if not present in `buf` yet.
+def _find_crlf(buf: bytearray, start: int) -> int:
+    n: int = len(buf)
+    i: int = start
+    while i + 1 < n:
+        if buf[i] == 13 and buf[i+1] == 10:
+            return i
+        i = i + 1
+    return -1
+
+
+# Parse a hex chunk-size at `[start, end)`. Stops at the first ';'
+# (chunk extension separator) or at `end`. Returns -1 if no hex
+# digits were found.
+def _parse_hex(buf: bytearray, start: int, end: int) -> int:
+    v: int = 0
+    seen: bool = False
+    i: int = start
+    while i < end:
+        b: int = buf[i]
+        if b == 59:
+            i = end
+        else:
+            d: int = -1
+            if b >= 48 and b <= 57:
+                d = b - 48
+            elif b >= 65 and b <= 70:
+                d = b - 55
+            elif b >= 97 and b <= 102:
+                d = b - 87
+            if d < 0:
+                i = end
+            else:
+                v = (v * 16) + d
+                seen = True
+                i = i + 1
+    if not seen:
+        return -1
+    return v
+
+
+# Returns True when the chunked body in `buf` (starting at
+# `header_end`) has been fully received: the 0-size chunk plus its
+# trailer-section terminator have arrived.
+def _chunked_complete(buf: bytearray, header_end: int) -> bool:
+    pos: int = header_end
+    n: int = len(buf)
+    while pos < n:
+        line_end: int = _find_crlf(buf, pos)
+        if line_end < 0:
+            return False
+        size: int = _parse_hex(buf, pos, line_end)
+        if size < 0:
+            return False
+        pos = line_end + 2
+        if size == 0:
+            while True:
+                tle: int = _find_crlf(buf, pos)
+                if tle < 0:
+                    return False
+                if tle == pos:
+                    return True
+                pos = tle + 2
+        next_pos: int = pos + size + 2
+        if next_pos > n:
+            return False
+        pos = next_pos
+    return False
+
+
+# Decode a chunked-encoded body (raw bytes after the headers) into
+# the concatenated chunk data. Stops at the 0-size chunk; trailers
+# and the final CRLF are dropped.
+def _decode_chunked(body: bytes) -> bytes:
+    src: bytearray = bytearray(0)
+    si: int = 0
+    sn: int = len(body)
+    while si < sn:
+        src.append(body[si])
+        si = si + 1
+    out: bytearray = bytearray(0)
+    pos: int = 0
+    n: int = len(src)
+    while pos < n:
+        line_end: int = _find_crlf(src, pos)
+        if line_end < 0:
+            pos = n
+        else:
+            size: int = _parse_hex(src, pos, line_end)
+            if size < 0:
+                pos = n
+            else:
+                pos = line_end + 2
+                if size == 0:
+                    pos = n
+                else:
+                    end: int = pos + size
+                    if end > n:
+                        end = n
+                    j: int = pos
+                    while j < end:
+                        out.append(src[j])
+                        j = j + 1
+                    pos = end + 2
+    return bytes(out)
+
+
+# Common read loop for both transports. Stops as soon as the response
+# is complete by Content-Length, by chunked terminator, or by peer
+# close. spython has no nullable types, so the helper takes both
+# transports plus a flag selecting between them.
+def _recv_response(is_tls: bool, sock: Socket, tls: SSLSocket) -> bytes:
+    out: bytearray = bytearray(0)
+    header_end: int = -1
+    content_length: int = -1
+    chunked: bool = False
+    while True:
+        chunk: bytes = b""
+        if is_tls:
+            chunk = tls.recv(4096)
+        else:
+            chunk = sock.recv(4096)
+        if len(chunk) == 0:
+            return bytes(out)
+        _append_bytes(out, chunk)
+        if header_end < 0:
+            header_end = _find_header_end(out)
+            if header_end >= 0:
+                content_length = _parse_content_length(out, header_end)
+                chunked = _is_chunked(out, header_end)
+        if header_end >= 0:
+            if chunked:
+                if _chunked_complete(out, header_end):
+                    return bytes(out)
+            else:
+                if content_length >= 0:
+                    if len(out) >= header_end + content_length:
+                        return bytes(out)
+
+
+# Resolve a hostname under the configured deadline, then open a TCP
+# socket and connect to the resulting IP. Returns the connected socket
+# on success; raises RequestException on DNS, connect, or timeout
+# failure. The DNS lookup is bounded by a worker-thread deadline
+# because getaddrinfo is otherwise uncancellable from spython.
+def _open_socket(host: str, port: int) -> Socket:
+    t: float = _timeout_seconds()
+    ip: str = ""
+    try:
+        ip = gethostbyname_timeout(host, t)
+    except Exception as e:
+        raise RequestException("requests: dns failed: " + e.msg)
+    s: Socket = Socket(AF_INET, SOCK_STREAM)
+    # settimeout() must be called BEFORE connect() so the connect phase
+    # honours the deadline. SO_RCVTIMEO/SO_SNDTIMEO don't apply to
+    # connect — socket.c does a non-blocking-connect + select dance
+    # under the covers when a timeout has been registered.
+    if t > 0.0:
+        s.settimeout(t)
+    try:
+        s.connect((ip, port))
+    except Exception as e:
+        raise RequestException("requests: connect failed: " + e.msg)
+    return s
+
+
+# Send the request bytes over a plain TCP socket and read the response.
+def _send_plain(host: str, port: int, request: bytes) -> bytes:
+    s: Socket = _open_socket(host, port)
+    s.sendall(request)
+    placeholder: SSLSocket = SSLSocket(0)
+    raw: bytes = _recv_response(False, s, placeholder)
+    s.close()
+    return raw
+
+
+# Same shape as _send_plain but wraps the socket in TLS first.
+def _send_tls(host: str, port: int, request: bytes) -> bytes:
+    s: Socket = _open_socket(host, port)
+    ctx: SSLContext = create_default_context()
+    if not _verify_enabled():
+        ctx.set_verify_none()
+    tls: SSLSocket = ctx.wrap_socket(s, host)
+    tls.sendall(request)
+    raw: bytes = _recv_response(True, s, tls)
+    tls.close()
+    s.close()
+    return raw
+
+
+class Response:
+    def __init__(self, url: str, status_code: int, reason: str, headers: map[str, str], content: bytes):
+        self.url = url
+        self.status_code = status_code
+        self.reason = reason
+        self.headers = headers
+        self.content = content
+        self.text = str(content)
+        self.encoding = "utf-8"
+        self.ok = status_code >= 200 and status_code < 400
+
+    # Parse the body as JSON. Raises whatever json.loads raises on
+    # invalid input (the underlying parser exits on failure today).
+    def json(self) -> Any:
+        return json.loads(self.text)
+
+    # Raise HTTPError when the response was a 4xx or 5xx.
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise HTTPError("requests: " + _int_to_str(self.status_code) + " " + self.reason + " for " + self.url)
+
+
+def _parse_response(url: str, raw: bytes) -> Response:
+    s: str = str(raw)
+    sep: int = _index_of(s, "\r\n\r\n", 0)
+    if sep < 0:
+        raise RequestException("requests: malformed response (no header terminator)")
+    head: str = s[0:sep]
+    body_str: str = s[sep+4:len(s)]
+    eol: int = _index_of(head, "\r\n", 0)
+    status_line: str = head
+    rest: str = ""
+    if eol >= 0:
+        status_line = head[0:eol]
+        rest = head[eol+2:len(head)]
+    sp1: int = _index_of(status_line, " ", 0)
+    if sp1 < 0:
+        raise RequestException("requests: malformed status line")
+    sp2: int = _index_of(status_line, " ", sp1+1)
+    code_str: str = ""
+    reason: str = ""
+    if sp2 < 0:
+        code_str = status_line[sp1+1:len(status_line)]
+        reason = ""
+    else:
+        code_str = status_line[sp1+1:sp2]
+        reason = status_line[sp2+1:len(status_line)]
+    code: int = int(code_str)
+    headers: map[str, str] = {}
+    pos: int = 0
+    while pos < len(rest):
+        next_eol: int = _index_of(rest, "\r\n", pos)
+        line: str = ""
+        if next_eol < 0:
+            line = rest[pos:len(rest)]
+            pos = len(rest)
+        else:
+            line = rest[pos:next_eol]
+            pos = next_eol + 2
+        if len(line) == 0:
+            continue
+        colon: int = _index_of(line, ":", 0)
+        if colon < 0:
+            continue
+        name: str = _to_lower(_strip(line[0:colon]))
+        value: str = _strip(line[colon+1:len(line)])
+        headers[name] = value
+    body_bytes: bytes = bytes(body_str)
+    te: str = ""
+    if _has_header(headers, "transfer-encoding"):
+        te = _to_lower(headers["transfer-encoding"])
+    if _index_of(te, "chunked", 0) >= 0:
+        body_bytes = _decode_chunked(body_bytes)
+    return Response(url, code, reason, headers, body_bytes)
+
+
+# Public dispatch. `request` is the lowest-level entry; the helpers
+# below wrap it for ergonomics.
+def request(method: str, url: str, body: bytes, headers: map[str, str]) -> Response:
+    parsed: tuple[str, str, int, str] = _parse_url(url)
+    scheme: str = parsed[0]
+    host: str = parsed[1]
+    port: int = parsed[2]
+    path: str = parsed[3]
+    wire: bytes = _build_request(method, host, path, body, headers)
+    raw: bytes = b""
+    if scheme == "https":
+        raw = _send_tls(host, port, wire)
+    else:
+        raw = _send_plain(host, port, wire)
+    return _parse_response(url, raw)
+
+
+def get(url: str, headers: map[str, str]) -> Response:
+    return request("GET", url, b"", headers)
+
+
+def post(url: str, body: bytes, headers: map[str, str]) -> Response:
+    return request("POST", url, body, headers)
+
+
+def put(url: str, body: bytes, headers: map[str, str]) -> Response:
+    return request("PUT", url, body, headers)
+
+
+def delete(url: str, headers: map[str, str]) -> Response:
+    return request("DELETE", url, b"", headers)
+
+
+def head(url: str, headers: map[str, str]) -> Response:
+    return request("HEAD", url, b"", headers)
+
+
+def patch(url: str, body: bytes, headers: map[str, str]) -> Response:
+    return request("PATCH", url, body, headers)
+
+
+def options(url: str, headers: map[str, str]) -> Response:
+    return request("OPTIONS", url, b"", headers)

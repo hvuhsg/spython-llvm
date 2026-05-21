@@ -1,0 +1,71 @@
+import random
+
+random.seed(12345)
+
+# randrange basic range membership.
+ok: bool = True
+for i in range(200):
+    v: int = random.randrange(0, 10)
+    if v < 0:
+        ok = False
+    if v >= 10:
+        ok = False
+print(ok)
+
+# randrange with step.
+ok2: bool = True
+for i in range(200):
+    w: int = random.randrange(0, 20, 5)
+    if w != 0:
+        if w != 5:
+            if w != 10:
+                if w != 15:
+                    ok2 = False
+print(ok2)
+
+# negative step.
+ok3: bool = True
+for i in range(200):
+    n: int = random.randrange(10, 0, -2)
+    if n != 10:
+        if n != 8:
+            if n != 6:
+                if n != 4:
+                    if n != 2:
+                        ok3 = False
+print(ok3)
+
+# expovariate positive.
+oke: bool = True
+for i in range(100):
+    e: float = random.expovariate(1.5)
+    if e < 0.0:
+        oke = False
+print(oke)
+
+# triangular within bounds.
+okt: bool = True
+for i in range(100):
+    t: float = random.triangular(1.0, 5.0, 2.0)
+    if t < 1.0:
+        okt = False
+    if t > 5.0:
+        okt = False
+print(okt)
+
+# paretovariate >= 1, weibull > 0.
+okp: bool = True
+for i in range(100):
+    p: float = random.paretovariate(2.0)
+    if p < 1.0:
+        okp = False
+    wv: float = random.weibullvariate(1.0, 1.5)
+    if wv < 0.0:
+        okp = False
+print(okp)
+
+# gauss / normalvariate / lognormvariate run and produce finite-ish values.
+g: float = random.gauss(0.0, 1.0)
+print(g == g)
+ln: float = random.lognormvariate(0.0, 1.0)
+print(ln > 0.0)

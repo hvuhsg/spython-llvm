@@ -1,0 +1,25 @@
+import base64
+import binascii
+import hashlib
+
+print(base64.standard_b64encode(bytes("hello")))
+print(base64.standard_b64decode("aGVsbG8="))
+
+# urlsafe uses - and _ instead of + and /.
+raw: bytes = bytes("\xfb\xff\xbf")
+print(base64.b64encode(raw))
+print(base64.urlsafe_b64encode(raw))
+print(base64.urlsafe_b64decode(base64.urlsafe_b64encode(bytes("hello?>"))))
+
+# base16.
+print(base64.b16encode(bytes("hi")))
+print(base64.b16decode("6869"))
+print(base64.b16decode("6869") == bytes("hi"))
+
+# binascii aliases.
+print(binascii.b2a_hex("AB"))
+print(binascii.a2b_hex("4142"))
+
+# hashlib.new dispatch matches the direct call.
+print(hashlib.new("sha256", bytes("abc")) == hashlib.sha256(bytes("abc")))
+print(hashlib.new("md5", bytes("")) == hashlib.md5(bytes("")))

@@ -122,6 +122,12 @@ def _close(fd: int) -> None: ...
 @extern
 def _gethostbyname(host: str) -> str: ...
 
+# Same as _gethostbyname but bounded by a deadline. Backed by a worker
+# thread, so a hung resolver can no longer hold up the caller. seconds
+# <= 0 falls back to the synchronous variant.
+@extern
+def _gethostbyname_timeout(host: str, seconds: float) -> str: ...
+
 @extern
 def _gethostname() -> str: ...
 
@@ -326,6 +332,17 @@ def gethostname() -> str:
 
 def gethostbyname(host: str) -> str:
     name: str = _gethostbyname(host)
+    cls: int = _last_error_class()
+    if cls != 0:
+        _raise_socket_error(host)
+    return name
+
+
+# Same as gethostbyname but bounded by `seconds`. Pass <= 0 to disable
+# the deadline. Raises TimeoutError on timeout, gaierror on resolver
+# failure, otherwise returns the dotted-decimal IPv4 string.
+def gethostbyname_timeout(host: str, seconds: float) -> str:
+    name: str = _gethostbyname_timeout(host, seconds)
     cls: int = _last_error_class()
     if cls != 0:
         _raise_socket_error(host)

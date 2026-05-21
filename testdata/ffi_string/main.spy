@@ -1,0 +1,15 @@
+import string
+
+print(string.ascii_lowercase)
+print(string.ascii_uppercase)
+print(string.digits)
+print(string.hexdigits)
+print(string.octdigits)
+print(string.punctuation)
+print(len(string.ascii_letters))
+print(len(string.whitespace))
+print(len(string.printable))
+print(string.capwords("hello world"))
+print(string.capwords("  the QUICK  brown  "))
+print(string.capwords("a-b-c", "-"))
+print(string.capwords("one two three"))

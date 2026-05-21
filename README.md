@@ -86,14 +86,17 @@ go build -o spython ./cmd/spython
 
 - **Types:** `int`, `float`, `bool`, `str`, `list[T]`, `dict[K, V]`, `set[T]`, `tuple`, `bytes`, `bytearray`, `None`, user-defined classes
 - **Type inference:** local variable types are inferred from the RHS at first binding (`x = 1`, `xs = [1.0, 2.0]`); explicit annotations (`x: int = 1`) are only needed when the RHS is ambiguous (e.g. `xs: list[int] = []`, `parent: Node | None = None`)
-- **Control flow:** `if / elif / else`, `while`, `for … in range`, `for … in list`, `for … in iterator`, `break`, `continue`, `return`
+- **Control flow:** `if / elif / else`, `while`, `for … in range`, `for … in list`, `for … in set`, `for … in dict` (yields keys), `for … in iterator`, `break`, `continue`, `return`
+- **Container methods:** `str` (`upper`/`lower`/`capitalize`/`strip`/`lstrip`/`rstrip`/`startswith`/`endswith`/`find`/`rfind`/`count`/`replace`/`split`/`join`/`zfill`/`isdigit`/`isalpha`/`isspace`/`isupper`/`islower`), `list` (`append`/`pop`/`insert`/`remove`/`index`/`count`/`reverse`/`clear`/`extend`/`sort`), `dict` (`keys`/`values`/`get`/`update`/`clear`), `set` (`add`/`discard`) — set membership is `x in s`
+- **Membership:** `x in y` / `x not in y` for str (substring), list, set, and dict (keys)
 - **Functions:** `def` with required type annotations, recursion, nested calls, early return, `*args`, `**kwargs`, keyword-only parameters, default arguments, keyword arguments and `*` / `**` unpacking at call sites
+- **Closures:** `lambda` expressions and nested `def`s as first-class values, with by-value capture of enclosing variables; the `Callable[[ArgTypes], Ret]` type annotation; closures passed as arguments (`key=`-style callbacks), returned from functions, stored in variables/lists. Lambda parameter types are inferred from the expected `Callable` type in context.
 - **Generators:** `def f() -> Iterator[T]` with `yield`, `yield from`, the `next()` builtin, and `StopIteration`
 - **Classes:** single inheritance, virtual dispatch (vtables), `super()`, `isinstance()`, field inference from `__init__`, implicit upcasting
 - **Dunder methods:** `__init__`, `__str__`, `__repr__`, `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, `__ge__`, `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`, `__mod__`, `__neg__`, `__pow__`
 - **Exceptions:** `raise`, `try / except / finally`, exception subclassing, propagation across calls; built-in hierarchy (`Exception`, `ArithmeticError`, `ZeroDivisionError`, `ValueError`, `TypeError`, `OSError`, …) auto-injected as a synthetic `builtins` module
 - **Imports:** `import module`, `import module as alias`, `from module import name`, multi-file projects
-- **Stdlib:** `math`, `random`, `time`, `io`, `os`, `os.path`, `sys`, `hashlib`, `binascii`, `base64`, `struct`, `socket`, `itertools`, `keyword`, `errno`, `stat`, `colorsys` — implemented as `.spy` shims over sibling C files (FFI via `// spython-link:` directives) for the C-backed ones, pure `.spy` for the rest
+- **Stdlib:** `math`, `random`, `time`, `io`, `os`, `os.path`, `sys`, `hashlib`, `binascii`, `base64`, `struct`, `socket`, `itertools`, `keyword`, `errno`, `stat`, `colorsys`, `re`, `fnmatch`, `string`, `textwrap`, `secrets`, `shutil` — implemented as `.spy` shims over sibling C files (FFI via `// spython-link:` directives) for the C-backed ones, pure `.spy` for the rest
 - **Operators:** arithmetic (`+ - * / // % **`), comparison (`== != < > <= >=`), logical (`and`, `or`, `not`), bitwise (`& | ^ ~ << >>`), augmented assign (`+=`, `-=`, …)
 - **Runtime:** `print`, `range`, `len`, `int()`, `float()`, `str()`, `bool()`, `isinstance()`, `sys.argv`, conservative GC, list/str/map indexing
 
@@ -103,7 +106,6 @@ go build -o spython ./cmd/spython
 - Decorators (`@property`, `@staticmethod`, `@classmethod`, …)
 - `async` / `await`
 - Dynamic typing — types are fixed at first binding (inferred from the RHS, or annotated when the RHS is ambiguous like `None` / empty containers); a name's type cannot change afterwards
-- Lambdas, nested / closure functions
 - Comprehensions (list / dict / set / generator)
 - Metaclasses, `__new__`, `__slots__`, descriptors
 - Context managers (`with`)

@@ -1,0 +1,33 @@
+# Smoke test for map[str, Any] — heterogeneous values stored as boxed
+# SpyAny tags, then unboxed back into concrete types via the any_*
+# builtins. Mirrors the shape of a JSON object: int, float, bool, str,
+# nested dict, nested list, None.
+
+inner: map[str, Any] = {"k": "v"}
+items: list[Any] = [1, "two", 3.5]
+
+data: map[str, Any] = {
+    "name": "Alice",
+    "age": 30,
+    "score": 9.5,
+    "active": True,
+    "absent": any_none(),
+    "child": inner,
+    "items": items,
+}
+
+print(any_str(data["name"]))
+print(any_int(data["age"]))
+print(any_float(data["score"]))
+print(any_bool(data["active"]))
+print(any_is_none(data["absent"]))
+print(any_tag(data["age"]))
+print(any_tag(data["name"]))
+
+child: map[str, Any] = any_dict(data["child"])
+print(any_str(child["k"]))
+
+xs: list[Any] = any_list(data["items"])
+print(any_int(xs[0]))
+print(any_str(xs[1]))
+print(any_float(xs[2]))

@@ -42,17 +42,44 @@ static int spy_os_to_cstr(const char *spy_buf, char *out, size_t out_cap) {
     return 0;
 }
 
-// getenv returns "" when unset, not NULL — simpler for callers since
-// spython has no Optional type yet.
-char *spy_os_getenv(const char *name_spy) {
+// _getenv_or returns the env var, or the supplied default str when unset.
+// The spy wrapper supplies "" as the default to mimic the old behaviour.
+char *spy_os__getenv_or(const char *name_spy, const char *default_spy) {
     char name[1024];
     if (spy_os_to_cstr(name_spy, name, sizeof(name)) != 0) {
         spy_os_last_err = 4;
-        return spy_str_new("", 0);
+        return (char *)default_spy;
     }
     const char *val = getenv(name);
-    if (val == NULL) return spy_str_new("", 0);
+    if (val == NULL) return (char *)default_spy;
     return spy_str_new(val, (int64_t)strlen(val));
+}
+
+// urandom(n): n bytes from /dev/urandom (falls back to rand()).
+char *spy_os_urandom(int64_t n) {
+    if (n < 0) n = 0;
+    unsigned char *buf = (unsigned char *)malloc((size_t)(n > 0 ? n : 1));
+    FILE *f = fopen("/dev/urandom", "rb");
+    size_t got = 0;
+    if (f) {
+        got = fread(buf, 1, (size_t)n, f);
+        fclose(f);
+    }
+    for (size_t i = got; i < (size_t)n; i++) buf[i] = (unsigned char)(rand() & 0xff);
+    char *r = spy_str_new((const char *)buf, n);
+    free(buf);
+    return r;
+}
+
+int64_t spy_os_system(const char *cmd_spy) {
+    char cmd[8192];
+    if (spy_os_to_cstr(cmd_spy, cmd, sizeof(cmd)) != 0) return -1;
+    return (int64_t)system(cmd);
+}
+
+char *spy_os_strerror(int64_t code) {
+    const char *msg = strerror((int)code);
+    return spy_str_new(msg, (int64_t)strlen(msg));
 }
 
 char *spy_os_getcwd(void) {

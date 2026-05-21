@@ -1,0 +1,29 @@
+d: map[str, int] = {"a": 1, "b": 2, "c": 3}
+total: int = 0
+keys: list[str] = []
+for k in d:
+    keys.append(k)
+    total = total + d[k]
+print(total)
+keys.sort()
+print(keys[0])
+print(keys[1])
+print(keys[2])
+
+# iterate + membership combined
+counts: map[str, int] = {}
+words: list[str] = ["a", "b", "a", "c", "a", "b"]
+for w in words:
+    if w in counts:
+        counts[w] = counts[w] + 1
+    else:
+        counts[w] = 1
+print(counts.get("a", 0))
+print(counts.get("b", 0))
+print(counts.get("c", 0))
+
+di: map[int, int] = {10: 100, 20: 200}
+s: int = 0
+for key in di:
+    s = s + key
+print(s)

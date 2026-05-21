@@ -11,16 +11,6 @@
 
 import os
 
-# C helpers in ospath.c: substring slicing and rfind by byte value. These
-# exist because spython's runtime only exposes single-char indexing + concat;
-# building `dirname` out of those would be quadratic.
-
-@extern
-def _substr(s: str, start: int, end: int) -> str: ...
-
-@extern
-def _rfind_char(s: str, ch: str) -> int: ...
-
 def _join2(a: str, b: str) -> str:
     if len(a) == 0:
         return b
@@ -45,11 +35,11 @@ def join(path: str, *paths: str) -> str:
 # split("/a/b/c") -> ("/a/b", "c"). Separator stripped from the head except
 # when head is just "/" (i.e. splitting "/foo" -> ("/", "foo")).
 def split(path: str) -> tuple[str, str]:
-    i: int = _rfind_char(path, "/")
+    i: int = path.rfind("/")
     if i < 0:
         return ("", path)
-    head: str = _substr(path, 0, i)
-    tail: str = _substr(path, i + 1, len(path))
+    head: str = path[0:i]
+    tail: str = path[i + 1:len(path)]
     if len(head) == 0:
         head = "/"
     return (head, tail)
@@ -65,13 +55,13 @@ def dirname(path: str) -> str:
 # splitext("foo.tar.gz") -> ("foo.tar", ".gz"). Returns (path, "") when there
 # is no extension. A leading-dot file like ".bashrc" has no extension.
 def splitext(path: str) -> tuple[str, str]:
-    last_sep: int = _rfind_char(path, "/")
-    last_dot: int = _rfind_char(path, ".")
+    last_sep: int = path.rfind("/")
+    last_dot: int = path.rfind(".")
     # No dot, or dot is in the directory part, or dot is a leading-dot basename.
     if last_dot < 0 or last_dot <= last_sep or last_dot == last_sep + 1:
         return (path, "")
-    root: str = _substr(path, 0, last_dot)
-    ext: str = _substr(path, last_dot, len(path))
+    root: str = path[0:last_dot]
+    ext: str = path[last_dot:len(path)]
     return (root, ext)
 
 def exists(path: str) -> bool:
@@ -95,3 +85,137 @@ def isdir(path: str) -> bool:
     if m < 0:
         return False
     return (m & _S_IFMT) == _S_IFDIR
+
+# ----- Path normalization -----
+
+def isabs(path: str) -> bool:
+    return len(path) > 0 and path[0:1] == "/"
+
+# normpath: collapse redundant separators and up-level references. Matches
+# posixpath.normpath, including the POSIX rule that exactly two leading
+# slashes are preserved while one or three-or-more collapse to one.
+def normpath(path: str) -> str:
+    if len(path) == 0:
+        return "."
+    initial: int = 0
+    while initial < len(path) and path[initial:initial + 1] == "/":
+        initial = initial + 1
+    lead: int = 0
+    if initial == 1:
+        lead = 1
+    if initial == 2:
+        lead = 2
+    if initial >= 3:
+        lead = 1
+    absolute: bool = initial > 0
+    comps: list[str] = path.split("/")
+    buf: list[str] = []
+    top: int = 0
+    for c in comps:
+        if len(c) == 0 or c == ".":
+            continue
+        if c == "..":
+            if absolute:
+                if top > 0:
+                    top = top - 1
+            else:
+                keep: bool = top == 0
+                if top > 0 and buf[top - 1] == "..":
+                    keep = True
+                if keep:
+                    if top < len(buf):
+                        buf[top] = ".."
+                    else:
+                        buf.append("..")
+                    top = top + 1
+                else:
+                    top = top - 1
+        else:
+            if top < len(buf):
+                buf[top] = c
+            else:
+                buf.append(c)
+            top = top + 1
+    prefix: str = ""
+    if lead == 1:
+        prefix = "/"
+    if lead == 2:
+        prefix = "//"
+    body: str = ""
+    i2: int = 0
+    while i2 < top:
+        if i2 > 0:
+            body = body + "/"
+        body = body + buf[i2]
+        i2 = i2 + 1
+    result: str = prefix + body
+    if len(result) == 0:
+        return "."
+    return result
+
+# abspath: normalize and make absolute relative to the current directory.
+def abspath(path: str) -> str:
+    if isabs(path):
+        return normpath(path)
+    return normpath(join(os.getcwd(), path))
+
+# expanduser: replace a leading ~ or ~/ with $HOME. ~user is unsupported and
+# returned unchanged.
+def expanduser(path: str) -> str:
+    if len(path) == 0 or path[0:1] != "~":
+        return path
+    i: int = 1
+    while i < len(path) and path[i:i + 1] != "/":
+        i = i + 1
+    if i == 1:
+        home: str = os.getenv("HOME")
+        if len(home) == 0:
+            return path
+        return home + path[1:len(path)]
+    return path
+
+def _common_prefix2(a: str, b: str) -> str:
+    n: int = len(a)
+    if len(b) < n:
+        n = len(b)
+    i: int = 0
+    while i < n and a[i:i + 1] == b[i:i + 1]:
+        i = i + 1
+    return a[0:i]
+
+# commonprefix: longest common leading substring (character-wise, like
+# posixpath.commonprefix — note it is NOT path-component aware).
+def commonprefix(m: list[str]) -> str:
+    if len(m) == 0:
+        return ""
+    prefix: str = m[0]
+    i: int = 1
+    while i < len(m):
+        prefix = _common_prefix2(prefix, m[i])
+        i = i + 1
+    return prefix
+
+# getsize: size of path in bytes. Raises an OSError subclass if it can't be
+# stat'd.
+@extern
+def _stat_size(path: str) -> int: ...
+
+def getsize(path: str) -> int:
+    sz: int = _stat_size(path)
+    if sz < 0:
+        os._raise_os_error(path)
+    return sz
+
+@extern
+def _stat_mtime(path: str) -> float: ...
+
+# getmtime: last-modification time, in seconds since the epoch.
+def getmtime(path: str) -> float:
+    m: float = _stat_mtime(path)
+    if m < 0.0:
+        os._raise_os_error(path)
+    return m
+
+# splitdrive: on POSIX the drive is always empty, so this returns ("", path).
+def splitdrive(path: str) -> tuple[str, str]:
+    return ("", path)

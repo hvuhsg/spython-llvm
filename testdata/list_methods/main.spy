@@ -1,0 +1,34 @@
+xs: list[int] = [3, 1, 2]
+xs.append(5)
+print(xs.pop())
+print(len(xs))
+xs.insert(0, 9)
+print(xs[0])
+xs.sort()
+print(xs[0])
+print(xs[1])
+print(xs[2])
+print(xs[3])
+xs.reverse()
+print(xs[0])
+print(xs.index(9))
+print(xs.count(2))
+xs.remove(9)
+print(len(xs))
+ys: list[int] = [7, 8]
+xs.extend(ys)
+print(len(xs))
+xs.clear()
+print(len(xs))
+
+ss: list[str] = ["banana", "apple", "cherry"]
+ss.sort()
+print(ss[0])
+print(ss[1])
+print(ss.index("cherry"))
+print(ss.count("apple"))
+
+fs: list[float] = [3.5, 1.2, 2.8]
+fs.sort()
+print(fs[0])
+print(fs[2])

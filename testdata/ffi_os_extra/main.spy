@@ -1,0 +1,27 @@
+import os
+import ospath
+
+os.setenv("SPYTHON_TEST_VAR", "hello")
+print(os.getenv("SPYTHON_TEST_VAR"))
+print(os.getenv("SPYTHON_NOPE", "fallback"))
+print(os.getenv("SPYTHON_NOPE"))
+
+print(len(os.urandom(16)))
+
+base: str = "/tmp/spython_os_t"
+deep: str = ospath.join(base, "a/b/c")
+os.makedirs(deep, True)
+print(ospath.isdir(deep))
+os.makedirs(deep, True)
+print(ospath.isdir(deep))
+
+rc: int = os.system("true")
+print(rc)
+print(len(os.strerror(2)) > 0)
+
+# cleanup
+os.rmdir(deep)
+os.rmdir(ospath.join(base, "a/b"))
+os.rmdir(ospath.join(base, "a"))
+os.rmdir(base)
+print(ospath.exists(base))

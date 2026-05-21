@@ -1,9 +1,13 @@
+// spython-link: -lm
+//
 // stdlib/random.c — xoshiro256** PRNG with splitmix64 seed expansion.
 // Public-domain algorithms by Blackman & Vigna (prng.di.unimi.it) and
-// Steele Jr. et al. No external dependencies.
+// Steele Jr. et al. No external dependencies beyond libm for the
+// continuous distributions.
 
 #include <stdint.h>
 #include <time.h>
+#include <math.h>
 
 static uint64_t state[4];
 static int initialized = 0;
@@ -79,4 +83,61 @@ int64_t spy_random_getrandbits(int64_t n) {
     if (n <= 0) return 0;
     if (n >= 64) return (int64_t)next_u64();
     return (int64_t)(next_u64() & ((1ULL << n) - 1ULL));
+}
+
+// Internal: a fresh double in [0.0, 1.0).
+static double rnd(void) {
+    ensure_init();
+    return (double)(next_u64() >> 11) * (1.0 / (double)(1ULL << 53));
+}
+
+// normalvariate: Kinderman-Monahan ratio-of-uniforms (CPython's algorithm).
+double spy_random_normalvariate(double mu, double sigma) {
+    const double NV_MAGICCONST = 1.7155277699214135; // 4*exp(-0.5)/sqrt(2)
+    double z;
+    for (;;) {
+        double u1 = rnd();
+        double u2 = 1.0 - rnd();
+        z = NV_MAGICCONST * (u1 - 0.5) / u2;
+        if (z * z / 4.0 <= -log(u2)) break;
+    }
+    return mu + z * sigma;
+}
+
+// gauss: Box-Muller. Faster than normalvariate; same N(mu, sigma) result.
+double spy_random_gauss(double mu, double sigma) {
+    double u1 = 1.0 - rnd();
+    double u2 = rnd();
+    double z = sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
+    return mu + z * sigma;
+}
+
+double spy_random_lognormvariate(double mu, double sigma) {
+    return exp(spy_random_normalvariate(mu, sigma));
+}
+
+double spy_random_expovariate(double lambd) {
+    return -log(1.0 - rnd()) / lambd;
+}
+
+double spy_random_paretovariate(double alpha) {
+    double u = 1.0 - rnd();
+    return pow(u, -1.0 / alpha);
+}
+
+double spy_random_weibullvariate(double alpha, double beta) {
+    double u = 1.0 - rnd();
+    return alpha * pow(-log(u), 1.0 / beta);
+}
+
+double spy_random_triangular(double low, double high, double mode) {
+    double u = rnd();
+    if (high == low) return low;
+    double c = (mode - low) / (high - low);
+    if (u > c) {
+        u = 1.0 - u;
+        c = 1.0 - c;
+        double t = low; low = high; high = t;
+    }
+    return low + (high - low) * sqrt(u * c);
 }

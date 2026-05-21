@@ -200,3 +200,79 @@ def hypot(*coords: float) -> float:
         s = s + coords[i] * coords[i]
         i = i + 1
     return sqrt(s)
+
+
+# Combinatorics (integer domain). comb(n, k) = n! / (k! (n-k)!);
+# perm(n, k) = n! / (n-k)!. perm with k < 0 means k = n (CPython's k=None).
+@extern
+def comb(n: int, k: int) -> int: ...
+
+@extern
+def _perm(n: int, k: int) -> int: ...
+
+def perm(n: int, k: int = -1) -> int:
+    return _perm(n, k)
+
+# IEEE helpers.
+@extern
+def remainder(x: float, y: float) -> float: ...
+
+@extern
+def nextafter(x: float, y: float) -> float: ...
+
+@extern
+def ulp(x: float) -> float: ...
+
+@extern
+def _frexp_m(x: float) -> float: ...
+
+@extern
+def _frexp_e(x: float) -> int: ...
+
+@extern
+def _modf_frac(x: float) -> float: ...
+
+@extern
+def _modf_int(x: float) -> float: ...
+
+# frexp(x) -> (mantissa, exponent) with x == mantissa * 2**exponent.
+def frexp(x: float) -> tuple[float, int]:
+    return (_frexp_m(x), _frexp_e(x))
+
+# modf(x) -> (fractional, integer) parts, both with x's sign.
+def modf(x: float) -> tuple[float, float]:
+    return (_modf_frac(x), _modf_int(x))
+
+
+# isclose(a, b, *, rel_tol=1e-9, abs_tol=0.0) — pure spy over fabs/isinf.
+def isclose(a: float, b: float, rel_tol: float = 0.000000001, abs_tol: float = 0.0) -> bool:
+    if a == b:
+        return True
+    if isinf(a) or isinf(b):
+        return False
+    diff: float = fabs(b - a)
+    t1: float = rel_tol * fabs(a)
+    t2: float = rel_tol * fabs(b)
+    m: float = t1
+    if t2 > m:
+        m = t2
+    if abs_tol > m:
+        m = abs_tol
+    return diff <= m
+
+# prod(xs, start=1.0) — product of a list of floats.
+def prod(xs: list[float], start: float = 1.0) -> float:
+    p: float = start
+    for x in xs:
+        p = p * x
+    return p
+
+# dist(p, q) — Euclidean distance between two equal-length point lists.
+def dist(p: list[float], q: list[float]) -> float:
+    s: float = 0.0
+    i: int = 0
+    while i < len(p):
+        d: float = p[i] - q[i]
+        s = s + d * d
+        i = i + 1
+    return sqrt(s)

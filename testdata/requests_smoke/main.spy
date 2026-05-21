@@ -1,0 +1,49 @@
+import requests
+from requests import Response, RequestException, HTTPError
+
+
+def main() -> int:
+    requests.set_verify(False)
+    headers: map[str, str] = {}
+
+    r: Response = requests.get("https://127.0.0.1:18443/", headers)
+    print(r.status_code)
+    print(r.ok)
+    print(r.text)
+    print(r.headers["content-type"])
+    print(r.headers["x-test"])
+
+    body: bytes = b"hello world"
+    r2: Response = requests.post("https://127.0.0.1:18443/echo", body, headers)
+    print(r2.status_code)
+    print(r2.text)
+
+    rj: Response = requests.get("https://127.0.0.1:18443/json", headers)
+    print(rj.status_code)
+    parsed: Any = rj.json()
+    d: map[str, Any] = any_dict(parsed)
+    print(any_str(d["name"]))
+    print(any_int(d["age"]))
+    tags: list[Any] = any_list(d["tags"])
+    print(any_str(tags[0]))
+    print(any_str(tags[1]))
+
+    rc: Response = requests.get("https://127.0.0.1:18443/chunked", headers)
+    print(rc.status_code)
+    print(rc.headers["transfer-encoding"])
+    print(rc.text)
+
+    r404: Response = requests.get("https://127.0.0.1:18443/404", headers)
+    print(r404.status_code)
+    print(r404.ok)
+    raised: bool = False
+    try:
+        r404.raise_for_status()
+    except HTTPError as e:
+        raised = True
+    print(raised)
+
+    return 0
+
+
+main()

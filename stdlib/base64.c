@@ -99,3 +99,44 @@ char *spy_base64_b64decode(const char *src) {
     free(buf);
     return result;
 }
+
+// Base16 (hex) per RFC 4648: uppercase on encode, case-insensitive on
+// decode. Invalid input to decode yields empty bytes (matching the lenient
+// b64decode behaviour above).
+char *spy_base64__b16encode(const char *src) {
+    static const char HEX[] = "0123456789ABCDEF";
+    int64_t in_len = spy_str_len(src);
+    const unsigned char *in = SPY_DATA(src);
+    char *buf = (char *)malloc((size_t)(in_len * 2 + 1));
+    for (int64_t i = 0; i < in_len; i++) {
+        buf[i * 2] = HEX[in[i] >> 4];
+        buf[i * 2 + 1] = HEX[in[i] & 0x0f];
+    }
+    char *result = spy_str_new(buf, in_len * 2);
+    free(buf);
+    return result;
+}
+
+static int hexval(unsigned char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+char *spy_base64__b16decode(const char *src) {
+    int64_t in_len = spy_str_len(src);
+    const unsigned char *in = SPY_DATA(src);
+    if (in_len % 2 != 0) return spy_str_new("", 0);
+    char *buf = (char *)malloc((size_t)(in_len / 2 > 0 ? in_len / 2 : 1));
+    int64_t j = 0;
+    for (int64_t i = 0; i + 1 < in_len; i += 2) {
+        int hi = hexval(in[i]);
+        int lo = hexval(in[i + 1]);
+        if (hi < 0 || lo < 0) { free(buf); return spy_str_new("", 0); }
+        buf[j++] = (char)((hi << 4) | lo);
+    }
+    char *result = spy_str_new(buf, j);
+    free(buf);
+    return result;
+}

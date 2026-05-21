@@ -303,6 +303,45 @@ func (p *Parser) parseTypeAnnotation() (*TypeAnnotation, error) {
 		Name: nameTok.Literal,
 	}
 
+	// Callable[[ArgTypes...], RetType] — a first-class function type.
+	if ann.Name == "Callable" && p.peek().Type == lexer.TOKEN_LBRACK {
+		p.advance() // consume outer [
+		if err := p.expect(lexer.TOKEN_LBRACK); err != nil {
+			return nil, err
+		}
+		if p.peek().Type != lexer.TOKEN_RBRACK {
+			for {
+				arg, err := p.parseTypeAnnotation()
+				if err != nil {
+					return nil, err
+				}
+				ann.CallableArgs = append(ann.CallableArgs, arg)
+				if p.peek().Type != lexer.TOKEN_COMMA {
+					break
+				}
+				p.advance()
+				if p.peek().Type == lexer.TOKEN_RBRACK {
+					break
+				}
+			}
+		}
+		if err := p.expect(lexer.TOKEN_RBRACK); err != nil { // close arg list
+			return nil, err
+		}
+		if err := p.expect(lexer.TOKEN_COMMA); err != nil {
+			return nil, err
+		}
+		ret, err := p.parseTypeAnnotation()
+		if err != nil {
+			return nil, err
+		}
+		ann.CallableRet = ret
+		if err := p.expect(lexer.TOKEN_RBRACK); err != nil { // close Callable
+			return nil, err
+		}
+		return ann, nil
+	}
+
 	// Check for generic params: list[int], map[str, int]
 	if p.peek().Type == lexer.TOKEN_LBRACK {
 		p.advance() // consume [
@@ -337,6 +376,28 @@ func (p *Parser) parseExpr(minPrec int) (Expr, error) {
 
 	for {
 		tok := p.peek()
+
+		// Membership tests `x in y` and `x not in y` sit at comparison
+		// precedence (3). `not in` is two tokens; recognise it here since the
+		// leading `not` would otherwise only parse as a unary prefix.
+		if tok.Type == lexer.TOKEN_IN || (tok.Type == lexer.TOKEN_NOT && p.peekN(1).Type == lexer.TOKEN_IN) {
+			if 3 < minPrec {
+				break
+			}
+			op := "in"
+			p.advance()
+			if tok.Type == lexer.TOKEN_NOT {
+				op = "not in"
+				p.advance() // consume the `in`
+			}
+			right, err := p.parseExpr(4)
+			if err != nil {
+				return nil, err
+			}
+			left = &BinaryExpr{Pos: left.GetPos(), Left: left, Op: op, Right: right}
+			continue
+		}
+
 		prec, ok := binaryPrec(tok.Type)
 		if !ok || prec < minPrec {
 			break
@@ -607,6 +668,32 @@ func (p *Parser) parsePrimary() (Expr, error) {
 	tok := p.peek()
 
 	switch tok.Type {
+	case lexer.TOKEN_LAMBDA:
+		p.advance()
+		params := []string{}
+		if p.peek().Type != lexer.TOKEN_COLON {
+			for {
+				nameTok := p.peek()
+				if nameTok.Type != lexer.TOKEN_IDENT {
+					return nil, fmt.Errorf("%d:%d: expected lambda parameter name, got %s", nameTok.Line, nameTok.Col, nameTok.Type)
+				}
+				p.advance()
+				params = append(params, nameTok.Literal)
+				if p.peek().Type != lexer.TOKEN_COMMA {
+					break
+				}
+				p.advance()
+			}
+		}
+		if err := p.expect(lexer.TOKEN_COLON); err != nil {
+			return nil, err
+		}
+		body, err := p.parseExpr(0)
+		if err != nil {
+			return nil, err
+		}
+		return &LambdaExpr{Pos: p.makePos(tok), Params: params, Body: body}, nil
+
 	case lexer.TOKEN_INT:
 		p.advance()
 		val, err := strconv.ParseInt(tok.Literal, 10, 64)

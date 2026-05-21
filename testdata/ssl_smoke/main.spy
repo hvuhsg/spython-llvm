@@ -1,0 +1,31 @@
+from ssl import SSLContext, SSLSocket, create_default_context
+from socket import Socket, AF_INET, SOCK_STREAM
+
+
+def main() -> int:
+    host: str = "127.0.0.1"
+    port: int = 18443
+    sock: Socket = Socket(AF_INET, SOCK_STREAM)
+    sock.connect((host, port))
+    ctx: SSLContext = create_default_context()
+    ctx.set_verify_none()
+    tls: SSLSocket = ctx.wrap_socket(sock, "localhost")
+    request: bytes = b"GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    tls.sendall(request)
+    chunk: bytes = tls.recv(4096)
+    print("got bytes")
+    print(len(chunk))
+    s: str = str(chunk)
+    j: int = 0
+    while j < len(s):
+        if s[j:j+1] == "\n":
+            print(s[0:j])
+            j = len(s)
+        else:
+            j = j + 1
+    tls.close()
+    sock.close()
+    return 0
+
+
+main()

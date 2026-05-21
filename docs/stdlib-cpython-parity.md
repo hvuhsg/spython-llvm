@@ -1,5 +1,23 @@
 # CPython stdlib parity in spython
 
+> **This revision shipped five new modules and widened several existing
+> ones.** New: `fnmatch` (full 1:1 — the last outstanding candidate),
+> `string` (constants + `capwords`), `textwrap` (`wrap`/`fill`/`shorten`/
+> `dedent`/`indent`), `secrets` (`token_hex`/`token_bytes`/`token_urlsafe`/
+> `randbelow`/`compare_digest`), and `shutil` (`copyfile`/`copy`/`copy2`/
+> `move`/`rmtree`/`which`). Widened: `math` (+`comb`/`perm`/`isclose`/`prod`/
+> `dist`/`remainder`/`nextafter`/`ulp`/`frexp`/`modf`), `random`
+> (+`randrange` and the `gauss`/`normalvariate`/`lognormvariate`/
+> `expovariate`/`paretovariate`/`weibullvariate`/`triangular` variates),
+> `os` (+`getenv(key, default)`/`makedirs`/`urandom`/`system`/`strerror`),
+> `os.path` (+`isabs`/`normpath`/`abspath`/`expanduser`/`commonprefix`/
+> `getsize`/`getmtime`/`splitdrive`), `base64` (+`standard_*`/`urlsafe_*`/
+> `b16encode`/`b16decode`), `binascii` (+`b2a_hex`/`a2b_hex`), `hashlib`
+> (+`new(name, data)`), and `time` (+`struct_time`/`localtime`/`gmtime`/
+> `mktime`/`strftime`/`asctime`/`ctime`). A compiler fix also enabled
+> `==`/`!=`/`<`/`<=`/`>`/`>=` and `+` on `bytes`/`bytearray`.
+
+
 An honest accounting of how spython's stdlib relates to CPython's. Names and
 purposes match; **signatures generally do not**. This document captures the
 gaps so that users (and we) don't mistake "module exists" for "drop-in

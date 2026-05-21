@@ -1,0 +1,29 @@
+# stdlib/string.spy — string constants and capwords(), 1:1 with CPython's
+# public string-module surface (the Template / Formatter classes need
+# Any-typed values and first-class callables, so they are out of scope).
+
+ascii_lowercase: str = "abcdefghijklmnopqrstuvwxyz"
+ascii_uppercase: str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+ascii_letters: str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+digits: str = "0123456789"
+hexdigits: str = "0123456789abcdefABCDEF"
+octdigits: str = "01234567"
+punctuation: str = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+whitespace: str = " \t\n\r\x0b\x0c"
+printable: str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\x0b\x0c"
+
+# capwords(s, sep="") — split on whitespace (sep == "") or on the literal
+# sep, capitalize each word, then rejoin. An empty sep reproduces CPython's
+# sep=None behaviour (collapse whitespace, join with a single space).
+def capwords(s: str, sep: str = "") -> str:
+    if len(sep) == 0:
+        parts: list[str] = s.split("")
+        out: list[str] = []
+        for p in parts:
+            out.append(p.capitalize())
+        return " ".join(out)
+    parts2: list[str] = s.split(sep)
+    out2: list[str] = []
+    for p in parts2:
+        out2.append(p.capitalize())
+    return sep.join(out2)

@@ -1,0 +1,25 @@
+import time
+
+t = time.gmtime(0)
+print(t.tm_year)
+print(t.tm_mon)
+print(t.tm_mday)
+print(t.tm_hour)
+print(t.tm_min)
+print(t.tm_sec)
+print(t.tm_wday)
+print(t.tm_yday)
+print(time.strftime("%Y-%m-%d %H:%M:%S", t))
+print(time.asctime(t))
+
+t2 = time.gmtime(1000000000)
+print(t2.tm_year)
+print(t2.tm_mon)
+print(t2.tm_mday)
+print(t2.tm_wday)
+print(time.strftime("%Y-%m-%dT%H:%M:%S", t2))
+
+t3 = time.gmtime(86400)
+print(t3.tm_mday)
+print(t3.tm_wday)
+print(time.strftime("%A %B", t3))

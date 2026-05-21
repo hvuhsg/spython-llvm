@@ -1,0 +1,125 @@
+# stdlib/ssl.spy — minimal TLS client wrapping over stdlib/ssl.c.
+#
+# Scope and shape mirror the small subset of CPython's ssl module that
+# the requests / urllib3 client paths actually exercise:
+#
+#   ctx = ssl.create_default_context()
+#   conn = socket.socket(...)
+#   conn.connect((host, 443))
+#   tls = ctx.wrap_socket(conn, server_hostname=host)
+#   tls.send(b"GET / HTTP/1.1\r\nHost: ...\r\n\r\n")
+#   data = tls.recv(4096)
+#   tls.close()
+#
+# Intentional gaps vs CPython:
+#   * Server-side TLS, custom CA bundles, client certificates, and
+#     session resumption are not implemented.
+#   * `wrap_socket` returns a separate SSLSocket object rather than
+#     mutating the underlying socket. Read/write must go through
+#     the SSLSocket; the original socket should not be used directly
+#     once wrapped.
+#   * The handshake is performed eagerly in wrap_socket. There is no
+#     do_handshake() control point.
+#   * Certificate / hostname verification is on by default. Disable
+#     by calling ctx.set_verify_none() before wrap_socket — only do
+#     this for tests against self-signed servers.
+
+from socket import Socket
+
+
+class SSLError(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+
+@extern
+def _ctx_new() -> int: ...
+
+@extern
+def _ctx_set_verify_none(ctx_h: int) -> int: ...
+
+@extern
+def _ctx_free(ctx_h: int) -> int: ...
+
+@extern
+def _wrap(ctx_h: int, fd: int, server_hostname: str) -> int: ...
+
+@extern
+def _send(ssl_h: int, data: bytes) -> int: ...
+
+@extern
+def _recv(ssl_h: int, n: int) -> bytes: ...
+
+@extern
+def _close(ssl_h: int) -> int: ...
+
+@extern
+def _last_error() -> str: ...
+
+
+# SSLSocket wraps a TLS handle returned by SSLContext.wrap_socket. It
+# does not subclass Socket — the spython type system has no shared
+# I/O abstract base class, so callers should treat tls as a separate
+# object even if the underlying fd is the same.
+class SSLSocket:
+    def __init__(self, handle: int):
+        self.handle = handle
+
+    # Send `data` and loop until every byte has been written or an
+    # error is raised. Returns the total number of bytes written
+    # (which equals len(data) on success).
+    def sendall(self, data: bytes) -> int:
+        total: int = 0
+        n: int = len(data)
+        while total < n:
+            chunk: bytes = data[total:n]
+            sent: int = _send(self.handle, chunk)
+            if sent < 0:
+                raise SSLError(_last_error())
+            if sent == 0:
+                raise SSLError("ssl: write returned 0")
+            total = total + sent
+        return total
+
+    def send(self, data: bytes) -> int:
+        sent: int = _send(self.handle, data)
+        if sent < 0:
+            raise SSLError(_last_error())
+        return sent
+
+    # Read up to `n` bytes. An empty result indicates EOF (the peer
+    # has closed the TLS session).
+    def recv(self, n: int) -> bytes:
+        return _recv(self.handle, n)
+
+    def close(self) -> None:
+        if self.handle > 0:
+            _close(self.handle)
+            self.handle = 0
+
+
+class SSLContext:
+    def __init__(self, handle: int):
+        self.handle = handle
+
+    # Disable peer / hostname verification on this context. Only safe
+    # for tests against self-signed servers; production use must keep
+    # the default.
+    def set_verify_none(self) -> None:
+        _ctx_set_verify_none(self.handle)
+
+    def wrap_socket(self, sock: Socket, server_hostname: str) -> SSLSocket:
+        h: int = _wrap(self.handle, sock.fd, server_hostname)
+        if h < 0:
+            raise SSLError(_last_error())
+        return SSLSocket(h)
+
+
+# Build a context that verifies peer certificates against the system
+# trust store and requires TLS 1.2+. Equivalent to CPython's
+# ssl.create_default_context() with default arguments for client use.
+def create_default_context() -> SSLContext:
+    h: int = _ctx_new()
+    if h < 0:
+        raise SSLError(_last_error())
+    return SSLContext(h)
