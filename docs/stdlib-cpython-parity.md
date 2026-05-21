@@ -1,5 +1,15 @@
 # CPython stdlib parity in spython
 
+> **29 modules now ship.** Since the prior revision, the `Any` unbox surface
+> (`any_dict` / `any_list` / `any_str` / `any_int` / `any_float` / `any_bool`
+> / `any_is_none`) landed and unblocked a real **`json`** (`loads(s) -> Any`,
+> `dumps(value: Any) -> str`); **`fnmatch`** landed in full (slicing-based
+> matcher); and **`requests`** (HTTP/1.1 client over `socket` + `ssl`),
+> **`ssl`** (`SSLContext` / `SSLSocket` / `create_default_context`),
+> **`secrets`**, **`shutil`**, **`string`**, **`textwrap`**, and
+> **`functools.reduce`** all shipped. The body tables and priority list below
+> have been reconciled to this 29-module reality.
+
 > **Closures shipped** (lambdas + nested `def`, captured by value, with the
 > `Callable[[Args], Ret]` type) — the first item on the "headline blockers"
 > list below. Concretely landed: the `itertools` callable variants
@@ -38,10 +48,12 @@ replacement."
 
 ## TL;DR
 
-- **4 of 18** shipped modules match CPython's public API: `keyword`,
-  `errno` (Darwin-pinned values), `stat`, `colorsys`. `fnmatch` remains the
-  one outstanding 1:1 candidate; it needs string slicing or a wider extern
-  surface to land. `itertools` ships as a generator-based subset; its
+- **29 modules** ship. **5 of 29** match CPython's public API 1:1:
+  `keyword`, `errno` (Darwin-pinned values), `stat`, `colorsys`, and
+  `fnmatch` (which landed this revision — slicing-based matcher covering
+  `fnmatch` / `fnmatchcase` / `filter`; `translate` is the one piece still
+  out, since it would emit a Python-`re` regex the POSIX engine can't run).
+  `itertools` ships as a generator-based subset; its
   callable-arg variants (`takewhile`/`dropwhile`/`filterfalse`/`starmap`/
   `accumulate_with`) now ship since closures landed (`groupby` still
   omitted). `re` shipped this
@@ -98,6 +110,14 @@ replacement."
 | `heapq` | `heappush` / `heappop` / `heapify` / `heapreplace` / `heappushpop`, `nlargest(n, it, key=lambda x: x)` / `nsmallest(n, it, key=...)`, `merge(lists)`. Heap layout follows CPython's `_siftup`/`_siftdown` so pop order (incl. ties) matches. | Int-specialized (`list[int]` heaps). `merge` is `merge(lists)` not `merge(*iterables, key=, reverse=)` — generators can't take varargs or default params, so its `key=`/`reverse=` are dropped. CPython's `key=None` identity is spelled `key=lambda x: x` (a lambda default on the non-generator `nlargest`/`nsmallest`). `_heapify_max` / `merge`'s lazy N-way nature aside, the heap ops are 1:1. |
 | `bisect` | `bisect_left` / `bisect_right` / `bisect`, `insort_left` / `insort_right` / `insort`, each `(a, x, lo=0, hi=-1, key=lambda v: v)`. As in CPython 3.10+, `key` applies to array elements, not to `x`. | Int-specialized. CPython's `hi=None` (→ len(a)) is modelled with the sentinel `hi=-1`. Otherwise signature- and behavior-compatible, including the `key=` argument. |
 | `list.sort(key=, reverse=)` | The list method (not a module): `xs.sort(key=lambda e: ...)` and `xs.sort(reverse=True)`, including both together, with a stable sort. Lowered to a closure-aware runtime sort (`spy_list_sort_key`) that computes keys by invoking the closure, then stably sorts an index permutation. | Element type must be `int`/`float`/`str`; `key` must be a closure (wrap a named function in a lambda) returning `int`/`float`/`str`. The captured free vars in the key must be function locals (capturing a module-level global in a lambda is a standing closure-codegen limitation). The free `sorted(iterable, key=)` builtin is still not provided. |
+| `json` | `loads(s) -> Any`, `dumps(value: Any) -> str`. The decoded `Any` tree is navigated with the `any_dict` / `any_list` / `any_str` / `any_int` / `any_float` / `any_bool` / `any_is_none` unbox builtins. | No `JSONDecoder` / `JSONEncoder` classes, no `load` / `dump` (file objects), none of the `dumps` kwargs (`indent`, `sort_keys`, `separators`, `default`, `ensure_ascii`, `cls`), no `object_hook` / `parse_float` hooks. CPython hands back live `dict`/`list` objects; spython hands back an `Any` you must explicitly unbox by type. `JSONDecodeError` is not raised. |
+| `fnmatch` | `fnmatch(name, pat)`, `fnmatchcase(name, pat)`, `filter(names, pat)` — full glob semantics (`*`, `?`, `[seq]`, `[!seq]`) via a slicing-based matcher. | `translate(pat) -> str` is omitted: it would emit a Python-`re` flavored regex, which the POSIX-ERE `re` backend can't consume. CPython normalizes case via `os.path.normcase` on the platform; spython's `fnmatch` is case-sensitive (only `fnmatchcase`'s explicit contract). No regex caching layer (CPython memoizes `translate`). |
+| `string` | Constants `ascii_lowercase` / `ascii_uppercase` / `ascii_letters` / `digits` / `hexdigits` / `octdigits` / `punctuation` / `whitespace` / `printable`; `capwords(s, sep='')`. | `Template` (`substitute` / `safe_substitute` — values must share one type in spython; CPython takes arbitrary objects), `Formatter` (needs first-class converters), `Formatter.vformat` / `parse` / `get_field`. Constants + `capwords` match CPython exactly. |
+| `textwrap` | `wrap(text, width=70) -> list[str]`, `fill(text, width=70)`, `shorten(text, width, placeholder=' [...]')`, `dedent(text)`, `indent(text, prefix)`. | The remaining `TextWrapper` kwargs (`initial_indent`, `subsequent_indent`, `expand_tabs`, `replace_whitespace`, `drop_whitespace`, `break_long_words`, `break_on_hyphens`, `tabsize`, `max_lines`) and the `TextWrapper` class itself. `indent(text, prefix, predicate=)` drops the predicate callable. |
+| `secrets` | `token_bytes(nbytes=32) -> bytes`, `token_hex(nbytes=32)`, `token_urlsafe(nbytes=32)`, `randbelow(n)`, `compare_digest(a, b)` (str). | `choice(seq)`, `randbits(k)`, the `SystemRandom` class. CPython's `nbytes=None` default (→ 32) is spelled `nbytes=32`. `compare_digest` is `str`-only (CPython also accepts `bytes`). |
+| `shutil` | `copyfile(src, dst)` / `copyfile_into`, `copy(src, dst)`, `copy2(src, dst)`, `move(src, dst)`, `rmtree(path)`, `which(cmd)`. | `copytree`, `copyfileobj` / `copymode` / `copystat`, `make_archive` / `unpack_archive`, `disk_usage`, `chown`, the `ignore_patterns` / `dirs_exist_ok` / `follow_symlinks` / `onerror` kwargs. No file-object overloads. |
+| `functools` | `reduce(function, sequence)` — two-arg form, `list[int]`-specialized. | 3-arg `reduce(f, it, initializer)` (needs a non-int sentinel), `partial` (varargs capture), `lru_cache` / `cache` / `cached_property` (decorators), `cmp_to_key`, `total_ordering`, `wraps` / `update_wrapper`, `singledispatch`, `reduce` over non-int element types. |
+| `requests` | HTTP/1.1 client over `socket` + `ssl`: `get` / `post` / `put` / `delete` / `head` / `patch` / `options` / `request(method, url, body, headers)`; a `Response` (`.url` / `.status_code` / `.reason` / `.headers` / `.content` / `.text` / `.encoding` / `.ok` / `.json()` / `.raise_for_status()`); exceptions `RequestException` / `HTTPError` / `InvalidURL`; module config `set_verify(bool)` / `set_timeout(float)`. | `params=` / `json=` / `auth=` / `cookies=` / `stream=` / `allow_redirects=` / `proxies=` kwargs (`body: bytes` + `headers: map[str,str]` are positional, not keyword); the `Session` class; streaming / chunked iteration; redirect following; `Response.iter_content` / `iter_lines` / `.cookies` / `.history` / `.elapsed`. `headers` values are one type (`str`); a real CPython port reaches for richer mappings. See `docs/requests-vs-cpython.md`. |
 
 ---
 
@@ -109,11 +129,13 @@ the table below splits "newly reachable (additive work only)" from
 
 ### Newly reachable (defaults landed — pure additive port from CPython)
 
+(`textwrap`, `secrets`, and `string` were in this bucket last revision and
+have since **shipped** — see "Already shipped" above. The rest remain
+reachable-but-unlanded.)
+
 | Module | Notes |
 |---|---|
-| `textwrap` | Every function takes ≥6 keyword args (`width=70, initial_indent='', …`). Defaults were the only blocker. |
 | `uuid` | `UUID(hex=None, bytes=None, bytes_le=None, fields=None, int=None, version=None, *, is_safe=...)` is now syntactically expressible end-to-end. Class state + the `bytes` type still need work, but the signature is reachable. |
-| `secrets` | Every function had a default arg (`token_bytes(nbytes=None)`); now reachable. |
 | `calendar` | `Calendar(firstweekday=0)`, `month(theyear, themonth, w=0, l=0)`, `prmonth(theyear, …)` — defaults were the blocker. |
 | `getopt` | `getopt(args, shortopts, longopts=[])` — default was the blocker. |
 
@@ -122,25 +144,24 @@ the table below splits "newly reachable (additive work only)" from
 | Module | Actual blocker |
 |---|---|
 | `cmath` | Returns native `complex` — we have no complex type. (`isclose` / `log(z[, base])` defaults are no longer a blocker.) |
-| `string` | `Template.substitute(**kwargs)` values must all share one type — CPython accepts arbitrary objects. `Formatter` would still need first-class callables for custom converters. Constants + `capwords` are fine. |
-| `glob` | `glob(pat, *, recursive=False, root_dir=None, dir_fd=None, include_hidden=False)` defaults + the `iglob` generator are no longer blockers, but the implementation still needs `fnmatch`-style pattern matching (which itself isn't shipped — see below). |
+| `string` (partial only) | The shipped subset (constants + `capwords`) is done; what's still blocked: `Template.substitute(**kwargs)` values must all share one type — CPython accepts arbitrary objects — and `Formatter` would need first-class callables for custom converters. |
+| `glob` | `glob(pat, *, recursive=False, root_dir=None, dir_fd=None, include_hidden=False)` defaults + the `iglob` generator are no longer blockers. `fnmatch`-style matching now ships, so the matcher is available — the remaining work is the recursive `**` directory walk (and `iglob` as a generator). |
 | `mimetypes` | Module-level functions are fine; `MimeTypes` class needs `read` / `readfp` taking file-like objects. |
 | `ipaddress` | `ip_address(addr)` accepts `int \| str \| bytes` (union types); constructors take many kwargs. |
 | `hmac` | `new(key, msg=None, digestmod='')` — `digestmod` accepts a string OR a callable OR a module (union + first-class callables). |
-| `mmap`, `select`, `signal`, `subprocess`, `shutil`, `sqlite3`, `ssl`, `zlib` / `gzip`, `datetime`, `pathlib`, `argparse`, `csv` | Generator returns, callable kwargs, context manager use, or class-state-heavy APIs — all still pervasive even after defaults. |
+| `mmap`, `select`, `signal`, `subprocess`, `sqlite3`, `zlib` / `gzip`, `datetime`, `pathlib`, `argparse`, `csv` | Generator returns, callable kwargs, context manager use, or class-state-heavy APIs — all still pervasive even after defaults. (`shutil` and `ssl` were in this list last revision and have since shipped as subsets — see "Already shipped".) |
 
 ---
 
 ## Modules that genuinely can match CPython 1:1 today
 
-Four of the original five 1:1 candidates now ship (see "Already shipped"
-above): `keyword`, `errno`, `stat`, `colorsys`. The remaining one is:
+All five original 1:1 candidates now ship (see "Already shipped" above):
+`keyword`, `errno`, `stat`, `colorsys`, and `fnmatch`. `fnmatch` landed this
+revision with a slicing-based matcher — `fnmatch` / `fnmatchcase` / `filter`
+match CPython behavior; only `translate(pat)` is omitted (it would emit a
+Python-`re` flavored regex the POSIX-ERE `re` backend can't run).
 
-| Module | Public surface | Notes |
-|---|---|---|
-| `fnmatch` | `fnmatch(name, pat)`, `fnmatchcase(name, pat)`, `filter(names, pat)`, `translate(pat)` | Signatures are fixed-positional, but the implementation needs string slicing (or a substantial extern surface) to walk the pattern, and `translate` produces a regex that the runtime would need a matcher for. Reachable, just not landed. |
-
-Landing the four already done required relaxing the loader's
+Landing the first four required relaxing the loader's
 `isConstExpr` check to admit list/tuple/map literals at module top level,
 plus a `_pymod` helper in `colorsys` to bridge spython's C-style float
 modulo with CPython's `(0, m]` semantics. No deeper compiler work was
@@ -195,9 +216,11 @@ How many modules each missing feature would unlock if added:
    classes work, callers just write `try` / `finally`.
 4. **Metaclasses / runtime class creation** — unlocks `enum`, `abc`,
    `namedtuple`, ORM-style libs.
-5. **Dynamic typing / `Any`** — unlocks `pickle`, generic `copy.deepcopy`,
-   schema-free `json`, and the heterogeneous-tuple side of `struct` /
-   `string.Template`.
+5. **Dynamic typing / `Any`** — a partial `Any` (with the `any_*` unbox
+   builtins) shipped and already powers `json.loads` / `dumps`. A *fuller*
+   `Any` would unlock `pickle`, generic `copy.deepcopy`, the live-`dict`
+   ergonomics of `json` (vs. explicit unboxing today), and the
+   heterogeneous-tuple side of `struct` / `string.Template`.
 
 Generators (`yield`, `yield from`, `Iterator[T]`, `next()`,
 `StopIteration`) shipped in the prior revision and a generator-based
@@ -249,7 +272,7 @@ today. Use this to decide what to ship next.
 | Rank | Need | Status | Gating work |
 |---|---|---|---|
 | 1 | **`re` — regular expressions** | **Shipped this revision** (POSIX-ERE backend; see "Already shipped" above). | Remaining gaps vs. CPython are syntactic (POSIX ERE vs. Python re — no `\d`/`\w`/`\s`, no `(?:...)`, no named groups), plus callable-`repl` for `sub` (closures) and `re.compile` / `Pattern` (cache + class state). |
-| 2 | **`json` — JSON encode/decode** | **Not shipped.** | The blocker is **dynamic typing** — CPython returns `dict[str, Any]` from `loads`. A typed-schema variant (`json.loads_into(T, s)`) is reachable today and would cover most real use. The free-form `loads` waits on `Any`. |
+| 2 | **`json` — JSON encode/decode** | **Shipped this revision.** | `loads(s) -> Any` / `dumps(value: Any) -> str` ship, backed by the `Any` unbox builtins (`any_dict` / `any_list` / `any_str` / `any_int` / `any_float` / `any_bool` / `any_is_none`). The CPython "returns a live `dict`" ergonomics differ — you unbox the `Any` tree by type. Still missing: `dumps` kwargs (`indent` / `sort_keys` / `default` / …), `load` / `dump` file forms, hooks, and `JSONDecodeError`. |
 | 3 | **`datetime`** | Blocked. | Needs class methods, ample defaults (now landed), and `timedelta` arithmetic via `__add__` / `__sub__` (operator overloads on user classes — check whether shipped). The data shape itself is fine. Should be reachable in stages. |
 | 4 | **`pathlib.Path`** | Blocked. | Operator overload (`/`), method chaining, and `__fspath__` protocol. The path operations themselves all exist in `ospath`. Largely a rewrap. |
 | 5 | **`argparse`** | Blocked. | Heterogeneous argument values (`type=int`, `action=...`), callable kwargs, and dynamic attribute access on `Namespace`. Needs closures + `Any`. A typed-builder variant could ship sooner. |
@@ -265,7 +288,7 @@ today. Use this to decide what to ship next.
 | 10 | **`itertools` callable variants** (`filterfalse`, `dropwhile`, `takewhile`, `starmap`, `groupby`) | **Mostly shipped** (closures landed). | `takewhile` / `dropwhile` / `filterfalse` / `starmap` / `accumulate_with` all ship. Still missing: `groupby` (heterogeneous `(key, group)` output). |
 | 11 | **`csv`** | Blocked. | `csv.reader` is a generator over rows (reachable now); `csv.DictReader` needs `Any`-typed values. The reader form is a clean shipping target. |
 | 12 | **`subprocess.run` / `Popen`** | Blocked. | Heterogeneous kwargs (`stdin=...`, `capture_output=True`, `text=True`), context manager use, and the `bytes` type. Defaults landed; bytes + class state are the remainder. |
-| 13 | **`shutil.copy*` / `rmtree` / `which`** | Not shipped. | Pure additive — the underlying `os` / `ospath` calls all exist. Mostly a thin wrapper module. |
+| 13 | **`shutil.copy*` / `rmtree` / `which`** | **Shipped this revision.** | `copyfile` / `copy` / `copy2` / `move` / `rmtree` / `which` ship. Still missing: `copytree`, `copyfileobj` / `copymode` / `copystat`, archive helpers, `disk_usage`, and the `ignore` / `dirs_exist_ok` / `onerror` kwargs. |
 | 14 | **`enum`** | Blocked. | Metaclass-driven. No path without metaclasses. A `const`-style alternative could ship instead. |
 | 15 | **`dataclasses`** | Blocked. | Decorator-driven `__init__` synthesis. No path without decorators. |
 | 16 | **`typing` (compile-time hints)** | Mostly N/A — spython types are checked statically already. `Optional[T]`, `list[T]`, `dict[K,V]` already work. Runtime introspection (`get_type_hints`, `Protocol` checks) is permanently out of reach without runtime type objects. |
@@ -274,7 +297,7 @@ today. Use this to decide what to ship next.
 
 | Rank | Need | Status | Gating work |
 |---|---|---|---|
-| 17 | **`urllib.request` / `http.client`** | Not shipped. | Needs HTTP parsing + TLS. Sockets are in place; `ssl` is blocked. Plain HTTP is reachable today. |
+| 17 | **`urllib.request` / `http.client` / `requests`** | **`requests` shipped this revision; `urllib`/`http.client` not.** | A `requests`-shaped HTTP/1.1 client now ships over `socket` + `ssl` (`get`/`post`/…, a `Response`, `set_verify`/`set_timeout`; see "Already shipped" and `docs/requests-vs-cpython.md`). `ssl` (`SSLContext`/`SSLSocket`) shipped too, so HTTPS works. The CPython `urllib.request` / `http.client` class APIs themselves are still unshipped (different surface); `requests` covers the common need. |
 | 18 | **`unittest`** | Blocked. | Decorators (`@skip`), introspection (test discovery), and class-method dispatch for `setUp` / `tearDown`. |
 | 19 | **`pickle` / `shelve`** | Permanently blocked without `Any`. | Wire format is dynamically typed by definition. |
 | 20 | **`asyncio`** | Permanently blocked without `async`/`await` + closures. | Whole-language feature, not a stdlib question. |
@@ -285,7 +308,7 @@ today. Use this to decide what to ship next.
 
 If the goal is **maximum programmer-impact per unit of work**, the order is:
 
-1. **`shutil` thin wrapper** — trivial; high daily value.
+1. ~~**`shutil` thin wrapper**~~ — **shipped** (`copy*` / `move` / `rmtree` / `which`).
 2. **`Counter` / `OrderedDict` / `deque` in `collections`** — straight ports.
 3. **Iterator protocol on `File`** (`for line in f:`) — small compiler change, large ergonomic win.
 4. **Closures** — **shipped.** Already cashed in for the `itertools`
