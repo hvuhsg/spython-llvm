@@ -1,0 +1,52 @@
+# Nested containers, mutation, aliasing.
+grid: list[list[int]] = [[1, 2], [3, 4], [5, 6]]
+print(grid[1][0])
+grid[0][1] = 99
+print(grid[0][1])
+
+# aliasing: two names, one list
+a = [1, 2, 3]
+b = a
+b.append(4)
+print(len(a))        # 4 — same object
+
+# list methods
+xs = [5, 3, 1, 4, 2]
+xs.sort()
+print(xs[0])
+print(xs[4])
+xs.reverse()
+print(xs[0])
+xs.append(6)
+print(xs.pop())
+print(len(xs))
+print(xs.index(4))
+xs.insert(0, 100)
+print(xs[0])
+
+# dict build + lookup + membership
+d: map[str, int] = {}
+d["a"] = 1
+d["b"] = 2
+d["a"] = 10
+print(d["a"])
+print(d.get("b", 0))
+print("a" in d)
+print("z" in d)
+print(len(d))
+
+# set ops (literal init; spython has no set() builtin)
+s: set[int] = {1}
+s.add(2)
+s.add(2)
+print(len(s))
+print(1 in s)
+s.discard(1)
+print(1 in s)
+
+# sum over nested
+total = 0
+for row in grid:
+    for v in row:
+        total = total + v
+print(total)

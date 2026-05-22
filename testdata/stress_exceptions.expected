@@ -1,0 +1,12 @@
+10
+not found
+-1
+caught via base
+try ok
+cleanup
+1
+except
+cleanup
+2
+inner finally
+outer caught

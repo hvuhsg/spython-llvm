@@ -1,0 +1,65 @@
+# Custom exception hierarchy + propagation across calls.
+class AppError(Exception):
+    def __init__(self, msg: str):
+        self.msg = msg
+
+class NotFoundError(AppError):
+    def __init__(self, msg: str):
+        self.msg = msg
+
+def lookup(k: int) -> int:
+    if k < 0:
+        raise NotFoundError("negative key")
+    return k * 2
+
+def handle(k: int) -> int:
+    try:
+        return lookup(k)
+    except NotFoundError:
+        print("not found")
+        return -1
+    except AppError:
+        print("app error")
+        return -2
+
+print(handle(5))
+print(handle(-1))
+
+# subclass caught by base-class handler
+def base_catch() -> None:
+    try:
+        raise NotFoundError("x")
+    except AppError:
+        print("caught via base")
+
+base_catch()
+
+# finally runs whether the try body succeeds or an exception is caught
+# (handler falls through; see KNOWN-BUGS for return/raise-in-except).
+def with_finally(fail: bool) -> int:
+    result = 0
+    try:
+        if fail:
+            raise ValueError("boom")
+        print("try ok")
+        result = 1
+    except ValueError:
+        print("except")
+        result = 2
+    finally:
+        print("cleanup")
+    return result
+
+print(with_finally(False))
+print(with_finally(True))
+
+# nested try: inner finally runs before outer handler
+def nested() -> None:
+    try:
+        try:
+            raise ValueError("inner")
+        finally:
+            print("inner finally")
+    except ValueError:
+        print("outer caught")
+nested()

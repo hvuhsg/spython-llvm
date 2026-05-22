@@ -1,0 +1,23 @@
+s = "Hello, World"
+print(s[0])
+print(s[7])
+print(len(s))
+print(s[0:5])
+print(s[7:])
+print(s[:5])
+print(s[3:100])      # over-long slice clamps
+print(s[5:5])        # empty
+print("," in s)
+print("xyz" in s)
+print(s.upper())
+print(s.lower())
+print("  pad  ".strip())
+parts = "a,b,c".split(",")
+print(parts[0] + parts[1] + parts[2])
+print("-".join(["1", "2", "3"]))
+print(s.replace("l", "L"))
+print(s.startswith("Hell"))
+print(s.endswith("ld"))
+print(s.find("World"))
+print(s.find("zzz"))
+print("abc" + "def")

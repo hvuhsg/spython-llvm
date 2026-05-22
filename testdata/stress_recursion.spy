@@ -1,0 +1,36 @@
+def is_even(n: int) -> bool:
+    if n == 0:
+        return True
+    return is_odd(n - 1)
+
+def is_odd(n: int) -> bool:
+    if n == 0:
+        return False
+    return is_even(n - 1)
+
+print(is_even(10))
+print(is_odd(7))
+
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+print(fib(25))
+
+def ackermann(m: int, n: int) -> int:
+    if m == 0:
+        return n + 1
+    if n == 0:
+        return ackermann(m - 1, 1)
+    return ackermann(m - 1, ackermann(m, n - 1))
+
+print(ackermann(2, 3))
+
+# deep linear recursion: spython uses the native stack (no recursion limit)
+def depth(n: int) -> int:
+    if n == 0:
+        return 0
+    return 1 + depth(n - 1)
+
+print(depth(20000))

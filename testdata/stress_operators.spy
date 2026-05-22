@@ -1,0 +1,17 @@
+# Operator precedence and bitwise edge cases.
+# NOTE: spython parses `-2 ** 2` as `(-2)**2`; use explicit parens.
+print(2 + 3 * 4)
+print((2 + 3) * 4)
+print(2 ** 3 ** 2)        # right-assoc -> 512
+print(-(2 ** 2))          # -4 (parenthesized to be explicit)
+print((-2) ** 2)          # 4
+print(7 & 3)
+print(7 | 8)
+print(5 ^ 1)
+print(~0)
+print(1 << 10)
+print(1024 >> 3)
+print(2 ** 62)
+print(1000000 * 1000000)
+print(not (1 == 2))
+print(3 < 4 and 4 < 5)

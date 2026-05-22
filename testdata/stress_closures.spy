@@ -1,0 +1,26 @@
+# Closures. NOTE: spython captures by VALUE at closure-creation time,
+# so the loop below prints 0,1,2 (CPython's late binding prints 2,2,2).
+fns: list[Callable[[], int]] = []
+for i in range(3):
+    fns.append(lambda: i)
+for f in fns:
+    print(f())
+
+def adder(n: int) -> Callable[[int], int]:
+    return lambda x: x + n
+
+add10 = adder(10)
+print(add10(5))
+
+def compose(f: Callable[[int], int], g: Callable[[int], int]) -> Callable[[int], int]:
+    return lambda x: f(g(x))
+
+inc: Callable[[int], int] = lambda x: x + 1
+dbl: Callable[[int], int] = lambda x: x * 2
+print(compose(inc, dbl)(3))
+
+xs = [3, 1, 2]
+xs.sort(key=lambda v: -v)
+print(xs[0])
+print(xs[1])
+print(xs[2])

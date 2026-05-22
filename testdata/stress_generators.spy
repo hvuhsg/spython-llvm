@@ -1,0 +1,44 @@
+def counter(start: int) -> Iterator[int]:
+    n = start
+    while True:
+        yield n
+        n = n + 1
+
+# take first 4 from an infinite generator
+g = counter(10)
+print(next(g))
+print(next(g))
+print(next(g))
+print(next(g))
+
+def first_n(it: Iterator[int], k: int) -> Iterator[int]:
+    taken = 0
+    for x in it:
+        if taken >= k:
+            return
+        yield x
+        taken = taken + 1
+
+total = 0
+for v in first_n(counter(1), 5):
+    total = total + v
+print(total)            # 1+2+3+4+5 = 15
+
+def flatten() -> Iterator[int]:
+    yield from first_n(counter(100), 2)
+    yield from first_n(counter(200), 2)
+
+for v in flatten():
+    print(v)
+
+# StopIteration on exhausted finite gen
+def two() -> Iterator[int]:
+    yield 1
+    yield 2
+t = two()
+print(next(t))
+print(next(t))
+try:
+    print(next(t))
+except StopIteration:
+    print("exhausted")
