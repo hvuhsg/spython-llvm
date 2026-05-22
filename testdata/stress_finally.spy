@@ -1,0 +1,68 @@
+# `finally` must run on every exit path — including return / break / continue
+# / raise taken from inside an except handler (regression test).
+
+# 1. return from the try body
+def from_try() -> int:
+    try:
+        return 1
+    finally:
+        print("f1")
+
+# 2. return from an except handler
+def from_except(n: int) -> int:
+    try:
+        if n == 0:
+            raise ValueError("z")
+        return 100
+    except ValueError:
+        return -1
+    finally:
+        print("f2 n=" + str(n))
+
+# 3. raise from an except handler — finally runs, then the new error propagates
+def reraise() -> int:
+    try:
+        try:
+            raise ValueError("a")
+        except ValueError:
+            raise ValueError("b")
+        finally:
+            print("f3")
+    except ValueError:
+        print("outer caught")
+        return 7
+
+# 4. break from an except handler inside a loop
+def brk() -> None:
+    for i in range(3):
+        try:
+            if i == 1:
+                raise ValueError("x")
+            print("body " + str(i))
+        except ValueError:
+            print("breaking")
+            break
+        finally:
+            print("f4 " + str(i))
+    print("after")
+
+# 5. continue from an except handler inside a loop
+def cont() -> int:
+    total = 0
+    for i in range(4):
+        try:
+            if i % 2 == 0:
+                raise ValueError("even")
+        except ValueError:
+            continue
+        finally:
+            print("f5 " + str(i))
+        total = total + i
+    return total
+
+print(from_try())
+print(from_except(0))
+print(from_except(2))
+print(reraise())
+brk()
+print(cont())

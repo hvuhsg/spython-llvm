@@ -1,0 +1,19 @@
+f1
+1
+f2 n=0
+-1
+f2 n=2
+100
+f3
+outer caught
+7
+body 0
+f4 0
+breaking
+f4 1
+after
+f5 0
+f5 1
+f5 2
+f5 3
+4

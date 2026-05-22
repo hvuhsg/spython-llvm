@@ -2894,7 +2894,7 @@ func (c *Checker) resolveTypeAnnotation(ann *parser.TypeAnnotation) Type {
 			return nil
 		}
 		return &ListType{Elem: elem}
-	case "map":
+	case "map", "dict": // `dict` is the CPython spelling; `map` is the original alias
 		if len(ann.Params) != 2 {
 			return nil
 		}

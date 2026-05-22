@@ -219,6 +219,20 @@ func (g *Generator) emitTryStmt(s *parser.TryStmt) error {
 	dispatch := g.newLabel("try.dispatch")
 	tryEnd := g.newLabel("try.end")
 
+	// With a finally, a single handler stays pushed across BOTH the try body
+	// and the except bodies; it is popped exactly once at finally.entry. A
+	// phase flag (0 = in try body, 1 = in an except handler body) lets the
+	// shared setjmp landing decide where a throw should go: dispatch (run the
+	// clause checks) versus finally-then-rethrow (a handler itself raised).
+	// This is what makes `finally` run when an except handler exits via
+	// `return`/`break`/`continue` (routed through finallyStack) or via `raise`
+	// (routed through the phase==1 landing).
+	var phaseSlot, onThrow, handlerEscaped string
+	if s.HasFinally {
+		onThrow = g.newLabel("try.onthrow")
+		handlerEscaped = g.newLabel("try.handler.escaped")
+	}
+
 	// Finally infrastructure — only if this try has a finally clause.
 	var frame finallyFrame
 	hasFinally := s.HasFinally
@@ -231,6 +245,15 @@ func (g *Generator) emitTryStmt(s *parser.TryStmt) error {
 		frame.pendingSlot = g.newTmp()
 		g.emitAlloca(frame.pendingSlot, "i32")
 		g.emitLine(fmt.Sprintf("  store i32 %d, i32* %s", pendingFallthrough, frame.pendingSlot))
+
+		// Phase slot: 0 in the try body, 1 in an except handler body. Its value
+		// is written in the dispatch block and must survive the longjmp that a
+		// re-raise in a handler triggers. Accesses are `volatile` so the
+		// optimizer cannot promote the slot to a register (which longjmp would
+		// clobber) — the classic setjmp/longjmp non-volatile-local hazard.
+		phaseSlot = g.newTmp()
+		g.emitAlloca(phaseSlot, "i32")
+		g.emitLine(fmt.Sprintf("  store volatile i32 0, i32* %s", phaseSlot))
 
 		if g.currentReturnLLVMType != "" && g.currentReturnLLVMType != "void" {
 			frame.retLLVMType = g.currentReturnLLVMType
@@ -257,7 +280,28 @@ func (g *Generator) emitTryStmt(s *parser.TryStmt) error {
 	g.emitLine(fmt.Sprintf("  %s = call i32 @setjmp(i8* %s)", sj, bufI8))
 	cmp := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = icmp eq i32 %s, 0", cmp, sj))
-	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", cmp, tryBody, dispatch))
+	if hasFinally {
+		// A throw lands here; onThrow decides dispatch vs finally-rethrow.
+		g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", cmp, tryBody, onThrow))
+	} else {
+		g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", cmp, tryBody, dispatch))
+	}
+
+	// ---- onThrow (finally only): route by phase ----
+	if hasFinally {
+		g.emitLine(fmt.Sprintf("%s:", onThrow))
+		ph := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load volatile i32, i32* %s", ph, phaseSlot))
+		inTry := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = icmp eq i32 %s, 0", inTry, ph))
+		// phase 0 → throw from try body → run clause checks; phase 1 → throw
+		// escaped an except handler → run finally, then rethrow to parent.
+		g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", inTry, dispatch, handlerEscaped))
+
+		g.emitLine(fmt.Sprintf("%s:", handlerEscaped))
+		g.emitLine(fmt.Sprintf("  store i32 %d, i32* %s", pendingRethrow, frame.pendingSlot))
+		g.emitLine(fmt.Sprintf("  br label %%%s", frame.entryLabel))
+	}
 
 	// ---- Try body ----
 	g.emitLine(fmt.Sprintf("%s:", tryBody))
@@ -275,19 +319,27 @@ func (g *Generator) emitTryStmt(s *parser.TryStmt) error {
 	if hasFinally {
 		g.finallyStack = g.finallyStack[:len(g.finallyStack)-1]
 	}
-	// Normal completion: pop handler, then jump to finally (or end).
-	g.emitLine("  call void @spy_exc_pop()")
+	// Normal completion. Without a finally, pop the handler and go to the end.
+	// With a finally, the handler stays pushed and is popped once in
+	// finally.entry, so just branch there.
 	if hasFinally {
 		g.emitLine(fmt.Sprintf("  br label %%%s", frame.entryLabel))
 	} else {
+		g.emitLine("  call void @spy_exc_pop()")
 		g.emitLine(fmt.Sprintf("  br label %%%s", tryEnd))
 	}
 
 	// ---- Dispatch ----
 	g.emitLine(fmt.Sprintf("%s:", dispatch))
-	// Pop before running except bodies, so a re-raise in an except clause
-	// propagates to the parent handler instead of this same try's buffer.
-	g.emitLine("  call void @spy_exc_pop()")
+	if hasFinally {
+		// Handler stays pushed (popped in finally.entry). Mark phase=1 so a
+		// throw from any handler body lands at handlerEscaped, not dispatch.
+		g.emitLine(fmt.Sprintf("  store volatile i32 1, i32* %s", phaseSlot))
+	} else {
+		// Pop before running except bodies, so a re-raise in an except clause
+		// propagates to the parent handler instead of this same try's buffer.
+		g.emitLine("  call void @spy_exc_pop()")
+	}
 	excRaw := g.newTmp()
 	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_exc_current()", excRaw))
 
@@ -340,13 +392,25 @@ func (g *Generator) emitTryStmt(s *parser.TryStmt) error {
 		// a new exception, spy_exc_throw will overwrite inflight anyway.
 		g.emitLine("  call void @spy_exc_clear()")
 
-		// Run except body — break/continue/return inside it route through
-		// the *outer* finally (if any); our own frame isn't pushed here
-		// because we've already popped the try's handler.
+		// Run except body. With a finally, push this frame so that a
+		// break/continue/return inside the handler routes through our finally
+		// (the handler is still pushed and gets popped in finally.entry). A
+		// `raise` inside the handler longjmps to our shared setjmp, lands at
+		// onThrow with phase==1, and is routed to finally too. Without a
+		// finally, exits route to the outer finally (if any), as before.
+		if hasFinally {
+			g.finallyStack = append(g.finallyStack, frame)
+		}
 		for _, st := range ec.Body {
 			if err := g.emitStmt(st); err != nil {
+				if hasFinally {
+					g.finallyStack = g.finallyStack[:len(g.finallyStack)-1]
+				}
 				return err
 			}
+		}
+		if hasFinally {
+			g.finallyStack = g.finallyStack[:len(g.finallyStack)-1]
 		}
 
 		// Restore/unbind the variable.
@@ -381,6 +445,13 @@ func (g *Generator) emitTryStmt(s *parser.TryStmt) error {
 	// ---- Finally (if present) ----
 	if hasFinally {
 		g.emitLine(fmt.Sprintf("%s:", frame.entryLabel))
+		// Pop the (single) handler that stayed pushed across the try body and
+		// the except bodies. Every edge into finally.entry — normal completion,
+		// no-match, return/break/continue routing, and a handler that raised —
+		// arrives with this handler still on the stack, so it is popped exactly
+		// once here. After this, spy_exc_rethrow (the pendingRethrow arm) and
+		// any throw from the finally body propagate to the parent handler.
+		g.emitLine("  call void @spy_exc_pop()")
 		// Finally body — checker has already rejected break/continue/return
 		// inside, so no pending dance is needed here.
 		for _, st := range s.FinallyBody {

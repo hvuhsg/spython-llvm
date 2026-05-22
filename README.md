@@ -98,7 +98,7 @@ go build -o spython ./cmd/spython
 - **Imports:** `import module`, `import module as alias`, `from module import name`, multi-file projects
 - **Stdlib:** 29 modules — `math`, `random`, `time`, `io`, `os`, `os.path`, `sys`, `hashlib`, `binascii`, `base64`, `struct`, `socket`, `ssl`, `requests`, `json`, `re`, `itertools`, `functools`, `heapq`, `bisect`, `keyword`, `errno`, `stat`, `colorsys`, `fnmatch`, `string`, `textwrap`, `secrets`, `shutil` — implemented as `.spy` shims over sibling C files (FFI via `// spython-link:` directives) for the C-backed ones, pure `.spy` for the rest. Names and purposes match CPython; signatures generally don't — see [docs/stdlib-cpython-parity.md](docs/stdlib-cpython-parity.md)
 - **Operators:** arithmetic (`+ - * / // % **`), comparison (`== != < > <= >=`), logical (`and`, `or`, `not`), bitwise (`& | ^ ~ << >>`), augmented assign (`+=`, `-=`, …)
-- **Runtime:** `print`, `range`, `len`, `int()`, `float()`, `str()`, `bool()`, `isinstance()`, `sys.argv`, conservative GC, list/str/map indexing
+- **Runtime:** `print`, `range`, `len`, `int()`, `float()`, `str()`, `bool()`, `isinstance()`, `sys.argv`, conservative GC, list/str/map indexing; `print()` / `str()` render CPython-style reprs for `list` / `tuple` / `dict` / `set` (lists and tuples are ordered and match exactly; `dict` / `set` follow internal hash order)
 
 ## What's not supported
 

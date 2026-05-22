@@ -1,0 +1,25 @@
+# print()/str() of containers now renders a CPython-style repr.
+# Lists and tuples are ordered (match CPython exactly); dict/set are shown
+# here with a single element so output is deterministic across hash orders.
+print([1, 2, 3])
+print(["a", "b"])
+print([1.5, 2.0, 3.25])
+print([True, False, True])
+print([[1, 2], [3, 4, 5]])
+nums: list[int] = []
+print(nums)
+print((1, "two", 3.0))
+single = (42,)
+print(single)
+d: dict[str, int] = {"key": 99}
+print(d)
+s: set[int] = {7}
+print(s)
+empty: set[int] = {1}
+empty.discard(1)
+print(empty)
+# str() returns the same repr
+print(str([10, 20]))
+print("list is " + str([1, 2]))
+# repr quoting: backslashes, quotes, tab
+print(["a\tb", "it's", "q\"q"])

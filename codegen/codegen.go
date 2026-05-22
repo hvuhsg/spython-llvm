@@ -200,6 +200,17 @@ func (g *Generator) GenerateAll(modules []*ModuleInput, entry *ModuleInput) (str
 	g.addStringConst("float floor division by zero")
 	g.addStringConst("float modulo")
 	g.addStringConst("StopIteration")
+	// Punctuation used by container repr (print/str of list/tuple/dict/set).
+	g.addStringConst("[")
+	g.addStringConst("]")
+	g.addStringConst("{")
+	g.addStringConst("}")
+	g.addStringConst("(")
+	g.addStringConst(")")
+	g.addStringConst(",")
+	g.addStringConst(", ")
+	g.addStringConst(": ")
+	g.addStringConst("set()")
 	for _, m := range modules {
 		for _, stmt := range m.Program.Stmts {
 			g.collectStringsInStmt(stmt)
@@ -510,6 +521,7 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare i8* @spy_gc_alloc(i64)")
 	g.emitLine("declare i8* @spy_str_new(i8*, i64)")
 	g.emitLine("declare i8* @spy_str_concat(i8*, i8*)")
+	g.emitLine("declare i8* @spy_str_repr(i8*)")
 	g.emitLine("declare i1 @spy_str_eq(i8*, i8*)")
 	g.emitLine("declare i8* @spy_str_index(i8*, i64)")
 	g.emitLine("declare i64 @spy_str_len(i8*)")
@@ -565,6 +577,7 @@ func (g *Generator) emitRuntimeDecls() {
 	g.emitLine("declare void @spy_map_clear(i8*)")
 	g.emitLine("declare i64 @spy_map_next(i8*, i64)")
 	g.emitLine("declare i8* @spy_map_key_at(i8*, i64)")
+	g.emitLine("declare i8* @spy_map_val_at(i8*, i64)")
 	g.emitLine("declare i8* @spy_set_new(i64, i64)")
 	g.emitLine("declare void @spy_set_add(i8*, i8*)")
 	g.emitLine("declare i1 @spy_set_contains(i8*, i8*)")
@@ -982,7 +995,7 @@ func (g *Generator) resolveTypeAnnotation(ann *parser.TypeAnnotation) types.Type
 		if len(ann.Params) == 1 {
 			return &types.ListType{Elem: g.resolveTypeAnnotation(ann.Params[0])}
 		}
-	case "map":
+	case "map", "dict":
 		if len(ann.Params) == 2 {
 			return &types.MapType{Key: g.resolveTypeAnnotation(ann.Params[0]), Value: g.resolveTypeAnnotation(ann.Params[1])}
 		}
@@ -1145,6 +1158,12 @@ func (g *Generator) emitPrintCall(call *parser.CallExpr) error {
 			g.emitLine(fmt.Sprintf("  call void @spy_print_str(i8* %s)", s))
 		case *types.InstanceType:
 			g.printInstance(val, t)
+		case *types.ListType, *types.MapType, *types.SetType, *types.TupleType:
+			s, err := g.emitContainerRepr(val, argType)
+			if err != nil {
+				return err
+			}
+			g.emitLine(fmt.Sprintf("  call void @spy_print_str(i8* %s)", s))
 		}
 	}
 	g.emitLine("  call void @spy_print_newline()")
@@ -3274,7 +3293,6 @@ func (g *Generator) emitStrConversion(e *parser.CallExpr) (string, error) {
 	}
 
 	argType := e.Args[0].GetResolvedType().(types.Type)
-	result := g.newTmp()
 
 	switch argType.(type) {
 	case *types.StrType:
@@ -3282,15 +3300,328 @@ func (g *Generator) emitStrConversion(e *parser.CallExpr) (string, error) {
 	case *types.BytesType:
 		// bytes and str share the [i64 len][data] layout — reinterpret, no copy.
 		return argVal, nil
-	case *types.IntType:
-		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_int_to_str(i64 %s)", result, argVal))
-	case *types.FloatType:
-		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_float_to_str(double %s)", result, argVal))
-	case *types.BoolType:
-		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_bool_to_str(i1 %s)", result, argVal))
+	case *types.ListType, *types.MapType, *types.SetType, *types.TupleType:
+		// str(container) == repr(container): [1, 2], {'k': 1}, etc.
+		return g.emitContainerRepr(argVal, argType)
 	}
+	// Primitives: int/float/bool render the same in str and repr.
+	return g.emitReprValue(argVal, argType)
+}
 
-	return result, nil
+// emitReprValue returns a runtime spython string giving the repr of val. It is
+// what container elements are rendered with: strings are quoted/escaped, ints/
+// floats/bools use their str form, and nested containers recurse. Instances
+// fall back to their __str__ (spython has no synthesized address-bearing
+// __repr__). Returns an error for element types we can't render.
+func (g *Generator) emitReprValue(val string, t types.Type) (string, error) {
+	r := g.newTmp()
+	switch ct := t.(type) {
+	case *types.StrType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_repr(i8* %s)", r, val))
+		return r, nil
+	case *types.IntType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_int_to_str(i64 %s)", r, val))
+		return r, nil
+	case *types.FloatType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_float_to_str(double %s)", r, val))
+		return r, nil
+	case *types.BoolType:
+		g.emitLine(fmt.Sprintf("  %s = call i8* @spy_bool_to_str(i1 %s)", r, val))
+		return r, nil
+	case *types.BytesType:
+		return val, nil
+	case *types.ListType, *types.MapType, *types.SetType, *types.TupleType:
+		return g.emitContainerRepr(val, t)
+	case *types.InstanceType:
+		// Best effort: call the instance's __str__ (spython has no synthesized
+		// address-bearing __repr__ to match CPython's <X object at 0x..>).
+		return g.emitVirtualCall(val, ct.Class, "__str__", nil, nil, &types.StrType{}), nil
+	}
+	return "", fmt.Errorf("cannot render value of type %s as a string", t)
+}
+
+// emitContainerRepr builds the CPython-style repr of a list/tuple/dict/set.
+// Lists and tuples are ordered and match CPython byte-for-byte; dict/set are
+// rendered in spython's internal (hash-bucket) order, which need not match
+// CPython's insertion order for multi-element containers.
+func (g *Generator) emitContainerRepr(val string, t types.Type) (string, error) {
+	switch ct := t.(type) {
+	case *types.ListType:
+		return g.emitListRepr(val, ct.Elem)
+	case *types.SetType:
+		return g.emitSetRepr(val, ct.Elem)
+	case *types.MapType:
+		return g.emitMapRepr(val, ct)
+	case *types.TupleType:
+		return g.emitTupleRepr(val, ct)
+	}
+	return "", fmt.Errorf("cannot render container of type %s", t)
+}
+
+// emitListRepr builds [e0, e1, ...] by indexing the list 0..len.
+func (g *Generator) emitListRepr(val string, elem types.Type) (string, error) {
+	elemLLVM := g.llvmType(elem)
+	acc := g.newTmp()
+	g.emitAlloca(acc, "i8*")
+	g.emitLine(fmt.Sprintf("  store i8* %s, i8** %s", g.emitStringLiteral("["), acc))
+
+	n := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i64 @spy_list_len(i8* %s)", n, val))
+	idxSlot := g.newTmp()
+	g.emitAlloca(idxSlot, "i64")
+	g.emitLine(fmt.Sprintf("  store i64 0, i64* %s", idxSlot))
+
+	cond := g.newLabel("lrepr.cond")
+	body := g.newLabel("lrepr.body")
+	done := g.newLabel("lrepr.done")
+	g.emitLine(fmt.Sprintf("  br label %%%s", cond))
+
+	g.emitLine(fmt.Sprintf("%s:", cond))
+	i := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i64, i64* %s", i, idxSlot))
+	c := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = icmp slt i64 %s, %s", c, i, n))
+	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", c, body, done))
+
+	g.emitLine(fmt.Sprintf("%s:", body))
+	// Separator before every element except the first (i == 0).
+	sepDone := g.newLabel("lrepr.sep.done")
+	doSep := g.newLabel("lrepr.sep")
+	isFirst := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = icmp eq i64 %s, 0", isFirst, i))
+	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", isFirst, sepDone, doSep))
+	g.emitLine(fmt.Sprintf("%s:", doSep))
+	g.appendStr(acc, g.emitStringLiteral(", "))
+	g.emitLine(fmt.Sprintf("  br label %%%s", sepDone))
+	g.emitLine(fmt.Sprintf("%s:", sepDone))
+
+	elemPtr := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_list_get(i8* %s, i64 %s)", elemPtr, val, i))
+	elemCast := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", elemCast, elemPtr, elemLLVM))
+	ev := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", ev, elemLLVM, elemLLVM, elemCast))
+	es, err := g.emitReprValue(ev, elem)
+	if err != nil {
+		return "", err
+	}
+	g.appendStr(acc, es)
+
+	ni := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = add i64 %s, 1", ni, i))
+	g.emitLine(fmt.Sprintf("  store i64 %s, i64* %s", ni, idxSlot))
+	g.emitLine(fmt.Sprintf("  br label %%%s", cond))
+
+	g.emitLine(fmt.Sprintf("%s:", done))
+	g.appendStr(acc, g.emitStringLiteral("]"))
+	res := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i8*, i8** %s", res, acc))
+	return res, nil
+}
+
+// emitSetRepr builds {e0, e1, ...} in spython's internal bucket order (which
+// need not match CPython's order). An empty set renders as "set()". The walk
+// mirrors `for x in set`: keep a search-from cursor, find the occupied bucket
+// with spy_set_next, then resume the search one bucket later.
+func (g *Generator) emitSetRepr(val string, elem types.Type) (string, error) {
+	elemLLVM := g.llvmType(elem)
+
+	// Empty-set fast path → "set()".
+	n := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i64 @spy_set_len(i8* %s)", n, val))
+	emptyLbl := g.newLabel("srepr.empty")
+	buildLbl := g.newLabel("srepr.build")
+	endLbl := g.newLabel("srepr.end")
+	isEmpty := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = icmp eq i64 %s, 0", isEmpty, n))
+	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", isEmpty, emptyLbl, buildLbl))
+
+	g.emitLine(fmt.Sprintf("%s:", emptyLbl))
+	emptyStr := g.emitStringLiteral("set()")
+	g.emitLine(fmt.Sprintf("  br label %%%s", endLbl))
+
+	g.emitLine(fmt.Sprintf("%s:", buildLbl))
+	acc := g.newTmp()
+	g.emitAlloca(acc, "i8*")
+	g.emitLine(fmt.Sprintf("  store i8* %s, i8** %s", g.emitStringLiteral("{"), acc))
+	curSlot := g.newTmp() // search-from cursor
+	g.emitAlloca(curSlot, "i64")
+	g.emitLine(fmt.Sprintf("  store i64 0, i64* %s", curSlot))
+	first := g.newTmp()
+	g.emitAlloca(first, "i1")
+	g.emitLine(fmt.Sprintf("  store i1 1, i1* %s", first))
+
+	cond := g.newLabel("srepr.cond")
+	body := g.newLabel("srepr.body")
+	done := g.newLabel("srepr.done")
+	g.emitLine(fmt.Sprintf("  br label %%%s", cond))
+
+	g.emitLine(fmt.Sprintf("%s:", cond))
+	cur := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i64, i64* %s", cur, curSlot))
+	idx := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i64 @spy_set_next(i8* %s, i64 %s)", idx, val, cur))
+	c := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = icmp sge i64 %s, 0", c, idx))
+	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", c, body, done))
+
+	g.emitLine(fmt.Sprintf("%s:", body))
+	sepDone := g.newLabel("srepr.sep.done")
+	doSep := g.newLabel("srepr.sep")
+	isFirst := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i1, i1* %s", isFirst, first))
+	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", isFirst, sepDone, doSep))
+	g.emitLine(fmt.Sprintf("%s:", doSep))
+	g.appendStr(acc, g.emitStringLiteral(", "))
+	g.emitLine(fmt.Sprintf("  br label %%%s", sepDone))
+	g.emitLine(fmt.Sprintf("%s:", sepDone))
+	g.emitLine(fmt.Sprintf("  store i1 0, i1* %s", first))
+
+	keyPtr := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_set_key(i8* %s, i64 %s)", keyPtr, val, idx))
+	keyCast := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", keyCast, keyPtr, elemLLVM))
+	kv := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", kv, elemLLVM, elemLLVM, keyCast))
+	ks, err := g.emitReprValue(kv, elem)
+	if err != nil {
+		return "", err
+	}
+	g.appendStr(acc, ks)
+
+	nc := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = add i64 %s, 1", nc, idx))
+	g.emitLine(fmt.Sprintf("  store i64 %s, i64* %s", nc, curSlot))
+	g.emitLine(fmt.Sprintf("  br label %%%s", cond))
+
+	g.emitLine(fmt.Sprintf("%s:", done))
+	g.appendStr(acc, g.emitStringLiteral("}"))
+	built := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i8*, i8** %s", built, acc))
+	g.emitLine(fmt.Sprintf("  br label %%%s", endLbl))
+
+	g.emitLine(fmt.Sprintf("%s:", endLbl))
+	res := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = phi i8* [ %s, %%%s ], [ %s, %%%s ]", res, emptyStr, emptyLbl, built, done))
+	return res, nil
+}
+
+// appendStr does *acc = spy_str_concat(*acc, s).
+func (g *Generator) appendStr(acc, s string) {
+	cur := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i8*, i8** %s", cur, acc))
+	cat := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_str_concat(i8* %s, i8* %s)", cat, cur, s))
+	g.emitLine(fmt.Sprintf("  store i8* %s, i8** %s", cat, acc))
+}
+
+// emitMapRepr builds {k: v, ...} walking the map with spy_map_next.
+func (g *Generator) emitMapRepr(val string, mt *types.MapType) (string, error) {
+	keyLLVM := g.llvmType(mt.Key)
+	valLLVM := g.llvmType(mt.Value)
+	acc := g.newTmp()
+	g.emitAlloca(acc, "i8*")
+	g.emitLine(fmt.Sprintf("  store i8* %s, i8** %s", g.emitStringLiteral("{"), acc))
+
+	idxSlot := g.newTmp()
+	g.emitAlloca(idxSlot, "i64")
+	f0 := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i64 @spy_map_next(i8* %s, i64 -1)", f0, val))
+	g.emitLine(fmt.Sprintf("  store i64 %s, i64* %s", f0, idxSlot))
+	first := g.newTmp()
+	g.emitAlloca(first, "i1")
+	g.emitLine(fmt.Sprintf("  store i1 1, i1* %s", first))
+
+	cond := g.newLabel("mrepr.cond")
+	body := g.newLabel("mrepr.body")
+	done := g.newLabel("mrepr.done")
+	g.emitLine(fmt.Sprintf("  br label %%%s", cond))
+
+	g.emitLine(fmt.Sprintf("%s:", cond))
+	i := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i64, i64* %s", i, idxSlot))
+	c := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = icmp sge i64 %s, 0", c, i))
+	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", c, body, done))
+
+	g.emitLine(fmt.Sprintf("%s:", body))
+	sepDone := g.newLabel("mrepr.sep.done")
+	doSep := g.newLabel("mrepr.sep")
+	isFirst := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i1, i1* %s", isFirst, first))
+	g.emitLine(fmt.Sprintf("  br i1 %s, label %%%s, label %%%s", isFirst, sepDone, doSep))
+	g.emitLine(fmt.Sprintf("%s:", doSep))
+	g.appendStr(acc, g.emitStringLiteral(", "))
+	g.emitLine(fmt.Sprintf("  br label %%%s", sepDone))
+	g.emitLine(fmt.Sprintf("%s:", sepDone))
+	g.emitLine(fmt.Sprintf("  store i1 0, i1* %s", first))
+
+	// key
+	kptr := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_map_key_at(i8* %s, i64 %s)", kptr, val, i))
+	kcast := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", kcast, kptr, keyLLVM))
+	kv := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", kv, keyLLVM, keyLLVM, kcast))
+	ks, err := g.emitReprValue(kv, mt.Key)
+	if err != nil {
+		return "", err
+	}
+	g.appendStr(acc, ks)
+	g.appendStr(acc, g.emitStringLiteral(": "))
+	// value
+	vptr := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i8* @spy_map_val_at(i8* %s, i64 %s)", vptr, val, i))
+	vcast := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = bitcast i8* %s to %s*", vcast, vptr, valLLVM))
+	vv := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", vv, valLLVM, valLLVM, vcast))
+	vs, err := g.emitReprValue(vv, mt.Value)
+	if err != nil {
+		return "", err
+	}
+	g.appendStr(acc, vs)
+
+	ni := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = call i64 @spy_map_next(i8* %s, i64 %s)", ni, val, i))
+	g.emitLine(fmt.Sprintf("  store i64 %s, i64* %s", ni, idxSlot))
+	g.emitLine(fmt.Sprintf("  br label %%%s", cond))
+
+	g.emitLine(fmt.Sprintf("%s:", done))
+	g.appendStr(acc, g.emitStringLiteral("}"))
+	res := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i8*, i8** %s", res, acc))
+	return res, nil
+}
+
+// emitTupleRepr builds (a, b, c). A 1-tuple gets a trailing comma: (a,).
+func (g *Generator) emitTupleRepr(val string, tt *types.TupleType) (string, error) {
+	structTy := g.tupleStructType(tt)
+	acc := g.newTmp()
+	g.emitAlloca(acc, "i8*")
+	g.emitLine(fmt.Sprintf("  store i8* %s, i8** %s", g.emitStringLiteral("("), acc))
+	for idx, et := range tt.Elements {
+		if idx > 0 {
+			g.appendStr(acc, g.emitStringLiteral(", "))
+		}
+		elemLLVM := g.llvmType(et)
+		slot := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = getelementptr %s, %s* %s, i32 0, i32 %d", slot, structTy, structTy, val, idx))
+		ev := g.newTmp()
+		g.emitLine(fmt.Sprintf("  %s = load %s, %s* %s", ev, elemLLVM, elemLLVM, slot))
+		es, err := g.emitReprValue(ev, et)
+		if err != nil {
+			return "", err
+		}
+		g.appendStr(acc, es)
+	}
+	if len(tt.Elements) == 1 {
+		g.appendStr(acc, g.emitStringLiteral(","))
+	}
+	g.appendStr(acc, g.emitStringLiteral(")"))
+	res := g.newTmp()
+	g.emitLine(fmt.Sprintf("  %s = load i8*, i8** %s", res, acc))
+	return res, nil
 }
 
 // emitBytesConversion handles bytes(x). str/bytes share a runtime layout so

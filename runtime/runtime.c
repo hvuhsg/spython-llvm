@@ -209,6 +209,42 @@ char* spy_str_concat(const char *a, const char *b) {
     return result;
 }
 
+// spy_str_repr returns the CPython-style repr of a string: wrapped in quotes
+// with backslash escapes. Single quotes are used unless the string contains a
+// single quote but no double quote (then double quotes), matching CPython.
+// Bytes 0x20..0x7e print literally; \\, the quote, \n, \r, \t get short
+// escapes; everything else becomes \xNN. (Non-ASCII is escaped as \xNN rather
+// than printed as a Unicode char — spython strings are byte strings.)
+char* spy_str_repr(const char *s) {
+    int64_t len = *(int64_t*)s;
+    const unsigned char *d = (const unsigned char*)(s + sizeof(int64_t));
+    char quote = '\'';
+    int has_single = 0, has_double = 0;
+    for (int64_t i = 0; i < len; i++) {
+        if (d[i] == '\'') has_single = 1;
+        else if (d[i] == '"') has_double = 1;
+    }
+    if (has_single && !has_double) quote = '"';
+    // Worst case each byte expands to 4 chars (\xNN), plus the two quotes.
+    char *buf = GC_MALLOC_ATOMIC(len * 4 + 2);
+    int64_t o = 0;
+    buf[o++] = quote;
+    for (int64_t i = 0; i < len; i++) {
+        unsigned char c = d[i];
+        if (c == (unsigned char)quote || c == '\\') { buf[o++] = '\\'; buf[o++] = c; }
+        else if (c == '\n') { buf[o++] = '\\'; buf[o++] = 'n'; }
+        else if (c == '\r') { buf[o++] = '\\'; buf[o++] = 'r'; }
+        else if (c == '\t') { buf[o++] = '\\'; buf[o++] = 't'; }
+        else if (c < 0x20 || c >= 0x7f) {
+            static const char hex[] = "0123456789abcdef";
+            buf[o++] = '\\'; buf[o++] = 'x'; buf[o++] = hex[c >> 4]; buf[o++] = hex[c & 0xf];
+        }
+        else buf[o++] = c;
+    }
+    buf[o++] = quote;
+    return spy_str_new(buf, o);
+}
+
 int spy_str_eq(const char *a, const char *b) {
     int64_t len_a = *(int64_t*)a;
     int64_t len_b = *(int64_t*)b;

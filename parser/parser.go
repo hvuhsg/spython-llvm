@@ -406,13 +406,7 @@ func (p *Parser) parseExpr(minPrec int) (Expr, error) {
 		op := tok.Literal
 		p.advance()
 
-		// Right-associative for **
-		nextPrec := prec + 1
-		if tok.Type == lexer.TOKEN_DSTAR {
-			nextPrec = prec
-		}
-
-		right, err := p.parseExpr(nextPrec)
+		right, err := p.parseExpr(prec + 1)
 		if err != nil {
 			return nil, err
 		}
@@ -430,7 +424,8 @@ func (p *Parser) parseExpr(minPrec int) (Expr, error) {
 
 func binaryPrec(t lexer.TokenType) (int, bool) {
 	// Python precedence (low to high):
-	// or(1) < and(2) < [not is unary] < comparisons(3) < |(4) < ^(5) < &(6) < shifts(7) < +-(8) < */%//(9) < **(10)
+	// or(1) < and(2) < [not is unary] < comparisons(3) < |(4) < ^(5) < &(6) < shifts(7) < +-(8) < */%//(9)
+	// ** is handled in parsePower (tighter than unary minus), not here.
 	switch t {
 	case lexer.TOKEN_OR:
 		return 1, true
@@ -450,8 +445,6 @@ func binaryPrec(t lexer.TokenType) (int, bool) {
 		return 8, true
 	case lexer.TOKEN_STAR, lexer.TOKEN_SLASH, lexer.TOKEN_DSLASH, lexer.TOKEN_PERCENT:
 		return 9, true
-	case lexer.TOKEN_DSTAR:
-		return 10, true
 	}
 	return 0, false
 }
@@ -484,7 +477,28 @@ func (p *Parser) parseUnary() (Expr, error) {
 			Operand: operand,
 		}, nil
 	}
-	return p.parsePostfix()
+	return p.parsePower()
+}
+
+// parsePower handles `**`, which binds tighter than unary minus on its left
+// but takes a unary expression on its right (CPython grammar:
+// power ::= primary ["**" u_expr]). So `-2 ** 2` parses as `-(2 ** 2)` and
+// `2 ** -1` as `2 ** (-1)`. Right-associative: `2 ** 3 ** 2` == `2 ** (3 ** 2)`.
+func (p *Parser) parsePower() (Expr, error) {
+	base, err := p.parsePostfix()
+	if err != nil {
+		return nil, err
+	}
+	if p.peek().Type != lexer.TOKEN_DSTAR {
+		return base, nil
+	}
+	tok := p.peek()
+	p.advance()
+	exp, err := p.parseUnary() // right operand is a u_expr (allows unary +/-/~ and nested **)
+	if err != nil {
+		return nil, err
+	}
+	return &BinaryExpr{Pos: base.GetPos(), Left: base, Op: tok.Literal, Right: exp}, nil
 }
 
 func (p *Parser) parsePostfix() (Expr, error) {
