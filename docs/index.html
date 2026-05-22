@@ -228,7 +228,7 @@
     <span class="badge">Go</span>
     <span class="badge">LLVM</span>
     <span class="badge">bdwgc</span>
-    <span class="badge">single-pass IR</span>
+    <span class="badge">multi-pass frontend</span>
   </div>
 </header>
 
@@ -241,7 +241,8 @@
   </p>
   <p>
     The goal is a practical, readable compiler that&rsquo;s small enough to reason about end-to-end &mdash;
-    not a full CPython replacement. It&rsquo;s opinionated: type annotations are required on first binding,
+    not a full CPython replacement. It&rsquo;s opinionated: types are inferred from the RHS at first binding
+    (annotations only required when the RHS is ambiguous, e.g. <code>None</code> or an empty container),
     dynamic features are intentionally absent, and the runtime is a single C file.
   </p>
 </section>
@@ -299,6 +300,7 @@ total: float = 0.0
         <li>str</li>
         <li>list[T]</li>
         <li>dict[K, V]</li>
+        <li>set[T]</li>
         <li>tuple</li>
         <li>bytes, bytearray</li>
         <li>None</li>
@@ -310,8 +312,10 @@ total: float = 0.0
       <ul>
         <li>if / elif / else</li>
         <li>while</li>
-        <li>for … in range</li>
-        <li>for … in list</li>
+        <li>for … in range / list</li>
+        <li>for … in set / dict</li>
+        <li>for … in iterator</li>
+        <li>x in y / x not in y</li>
         <li>break, continue</li>
         <li>return</li>
       </ul>
@@ -320,9 +324,22 @@ total: float = 0.0
       <h3>Functions</h3>
       <ul>
         <li>def with type annotations</li>
-        <li>recursion</li>
-        <li>nested calls</li>
-        <li>early return</li>
+        <li>recursion, early return</li>
+        <li>*args, **kwargs</li>
+        <li>keyword-only params</li>
+        <li>default arguments</li>
+        <li>kwargs &amp; * / ** unpacking</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Closures &amp; generators</h3>
+      <ul>
+        <li>lambda expressions</li>
+        <li>nested def, by-value capture</li>
+        <li>Callable[[Args], Ret]</li>
+        <li>yield, yield from</li>
+        <li>Iterator[T], next()</li>
+        <li>StopIteration</li>
       </ul>
     </div>
     <div class="card">
@@ -368,14 +385,23 @@ total: float = 0.0
       </ul>
     </div>
     <div class="card">
-      <h3>Stdlib</h3>
+      <h3>Container methods</h3>
       <ul>
-        <li>math, random, time</li>
-        <li>io, os, os.path, sys</li>
-        <li>hashlib, binascii, base64</li>
-        <li>struct, socket</li>
-        <li>.spy shim + sibling .c file</li>
-        <li>FFI via // spython-link:</li>
+        <li>str: upper/strip/split/…</li>
+        <li>list: append/sort(key=)/…</li>
+        <li>dict: keys/values/get/…</li>
+        <li>set: add/discard</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Stdlib — 29 modules</h3>
+      <ul>
+        <li>math, random, time, sys</li>
+        <li>io, os, os.path, shutil</li>
+        <li>socket, ssl, requests, json</li>
+        <li>re, itertools, functools</li>
+        <li>heapq, bisect, hashlib, …</li>
+        <li>.spy shim + sibling .c, FFI</li>
       </ul>
     </div>
     <div class="card">
@@ -406,13 +432,10 @@ total: float = 0.0
   <ul class="check-list no">
     <li>multiple inheritance, MRO</li>
     <li>decorators (@property, @staticmethod, @classmethod, …)</li>
-    <li>generators, yield, async / await</li>
-    <li>dynamic typing &mdash; every name needs an annotation at first binding</li>
-    <li>*args, **kwargs, default arguments</li>
-    <li>lambdas, nested / closure functions</li>
+    <li>async / await</li>
+    <li>dynamic typing &mdash; a name&rsquo;s type is fixed at first binding</li>
     <li>comprehensions (list / dict / set / generator)</li>
     <li>metaclasses, __new__, __slots__, descriptors</li>
-    <li>sets</li>
     <li>context managers (with)</li>
     <li>eval, exec, getattr / setattr / hasattr</li>
     <li>monkey-patching &mdash; classes are closed after definition</li>

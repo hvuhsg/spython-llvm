@@ -69,8 +69,8 @@ apt install golang clang libgc-dev
 ### Build
 
 ```sh
-git clone https://github.com/yehoyadashtinmetz/spython
-cd spython
+git clone https://github.com/hvuhsg/spython-llvm
+cd spython-llvm
 go build -o spython ./cmd/spython
 ```
 
@@ -96,7 +96,7 @@ go build -o spython ./cmd/spython
 - **Dunder methods:** `__init__`, `__str__`, `__repr__`, `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, `__ge__`, `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`, `__mod__`, `__neg__`, `__pow__`
 - **Exceptions:** `raise`, `try / except / finally`, exception subclassing, propagation across calls; built-in hierarchy (`Exception`, `ArithmeticError`, `ZeroDivisionError`, `ValueError`, `TypeError`, `OSError`, …) auto-injected as a synthetic `builtins` module
 - **Imports:** `import module`, `import module as alias`, `from module import name`, multi-file projects
-- **Stdlib:** `math`, `random`, `time`, `io`, `os`, `os.path`, `sys`, `hashlib`, `binascii`, `base64`, `struct`, `socket`, `itertools`, `keyword`, `errno`, `stat`, `colorsys`, `re`, `fnmatch`, `string`, `textwrap`, `secrets`, `shutil` — implemented as `.spy` shims over sibling C files (FFI via `// spython-link:` directives) for the C-backed ones, pure `.spy` for the rest
+- **Stdlib:** 29 modules — `math`, `random`, `time`, `io`, `os`, `os.path`, `sys`, `hashlib`, `binascii`, `base64`, `struct`, `socket`, `ssl`, `requests`, `json`, `re`, `itertools`, `functools`, `heapq`, `bisect`, `keyword`, `errno`, `stat`, `colorsys`, `fnmatch`, `string`, `textwrap`, `secrets`, `shutil` — implemented as `.spy` shims over sibling C files (FFI via `// spython-link:` directives) for the C-backed ones, pure `.spy` for the rest. Names and purposes match CPython; signatures generally don't — see [docs/stdlib-cpython-parity.md](docs/stdlib-cpython-parity.md)
 - **Operators:** arithmetic (`+ - * / // % **`), comparison (`== != < > <= >=`), logical (`and`, `or`, `not`), bitwise (`& | ^ ~ << >>`), augmented assign (`+=`, `-=`, …)
 - **Runtime:** `print`, `range`, `len`, `int()`, `float()`, `str()`, `bool()`, `isinstance()`, `sys.argv`, conservative GC, list/str/map indexing
 
